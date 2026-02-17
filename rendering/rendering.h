@@ -17,6 +17,9 @@ void render_clear(uint32_t colour);
 void render_putpixel(int x, int y, uint32_t colour);
 void render_fill_rect(int x, int y, int w, int h, uint32_t colour);
 void render_draw_rect(int x, int y, int w, int h, uint32_t colour);
+void render_draw_char(int x, int y, char c, uint32_t colour);
+void render_draw_text(int x, int y, const char *text, uint32_t colour);
+int render_text_width(const char *text);
 
 // needs font agnostic functions
 

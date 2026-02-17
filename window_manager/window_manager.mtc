@@ -1,0 +1,22 @@
+// ===========================================================
+// WindowManager Class (logical control over windows)
+// -----------------------------------------------------------
+// - Responsible for:
+//     - deciding which window is focused
+//     - changing zIndex order when a window is focused
+//     - moving/resizing windows based on user input or tiling logic
+//     - managing layouts (tiling, floating, stacking)
+//     - optional: workspace handling (virtual desktops)
+// - Methods:
+//     - focusWindow(Window* win)
+//     - moveWindow(Window* win, int x, int y)
+//     - resizeWindow(Window* win, int w, int h)
+//     - optionally: cycleFocus(), tileWindows(), floatWindow()
+// - Notes:
+//     - Does NOT draw windows
+//     - Decides logical order; updates window fields
+//     - Could receive input events and convert them to actions
+
+class WindowManager{
+    
+}
