@@ -29,7 +29,9 @@ int render_pitch(void){
 }
 
 void render_begin_frame(uint32_t clear_colour) {
-    render_clear(clear_colour);
+    (void)clear_colour;
+    // Full-screen clear via fb_putpixel syscall is too slow for now.
+    // TODO(HUMAN): Re-enable once SYS_FB_PRESENT/backbuffer path exists.
 }
 
 void render_end_frame(void) {
