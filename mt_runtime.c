@@ -89,3 +89,15 @@ char *realloc(char *ptr, int size) {
     byte_copy(new_ptr, ptr, copy_n);
     return new_ptr;
 }
+
+void mt_heap_reset(void) {
+    mt_heap_offset = 0;
+}
+
+int mt_heap_used(void) {
+    return mt_heap_offset;
+}
+
+int mt_heap_capacity(void) {
+    return MT_HEAP_SIZE;
+}

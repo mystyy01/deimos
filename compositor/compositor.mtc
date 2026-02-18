@@ -23,6 +23,8 @@ external string malloc(int size)
 external string realloc(string ptr, int size)
 
 external void render_draw_rect(int x, int y, int w, int h, int colour)
+external int render_width()
+external int render_height()
 
 
 class Window {
@@ -121,38 +123,102 @@ class Compositor {
         return (r * 65536) + (g * 256) + b
     }
 
-    void render(){
-        array<int> order = []
+    void layout_bsp_range(int first_index, int count, int x, int y, int w, int h) {
+        if (count <= 0) {
+            return
+        }
 
-        // Collect visible windows by index.
+        if (count == 1) {
+            int gap = 6
+            int draw_x = x + gap
+            int draw_y = y + gap
+            int draw_w = w - (gap * 2)
+            int draw_h = h - (gap * 2)
+            if (draw_w < 1) {
+                set draw_w = 1
+            }
+            if (draw_h < 1) {
+                set draw_h = 1
+            }
+
+            Window win = this.windows[first_index]
+            set win.x = draw_x
+            set win.y = draw_y
+            set win.w = draw_w
+            set win.h = draw_h
+            set this.windows[first_index] = win
+            return
+        }
+
+        int left_count = count / 2
+        if (left_count < 1) {
+            set left_count = 1
+        }
+        int right_count = count - left_count
+
+        bool split_vertical = true
+        if (h > w) {
+            set split_vertical = false
+        }
+
+        if (split_vertical) {
+            int left_w = w / 2
+            if (left_w < 1) {
+                set left_w = 1
+            }
+            int right_w = w - left_w
+            if (right_w < 1) {
+                set right_w = 1
+                set left_w = w - right_w
+            }
+
+            this.layout_bsp_range(first_index, left_count, x, y, left_w, h)
+            this.layout_bsp_range(first_index + left_count, right_count, x + left_w, y, right_w, h)
+            return
+        }
+
+        int top_h = h / 2
+        if (top_h < 1) {
+            set top_h = 1
+        }
+        int bottom_h = h - top_h
+        if (bottom_h < 1) {
+            set bottom_h = 1
+            set top_h = h - bottom_h
+        }
+
+        this.layout_bsp_range(first_index, left_count, x, y, w, top_h)
+        this.layout_bsp_range(first_index + left_count, right_count, x, y + top_h, w, bottom_h)
+    }
+
+    void layout_bsp_screen() {
+        int n = this.windows.length()
+        if (n <= 0) {
+            return
+        }
+
+        int area_x = 8
+        int area_y = 28
+        int area_w = render_width() - (area_x * 2)
+        int area_h = render_height() - area_y - 8
+        if (area_w < 1) {
+            set area_w = 1
+        }
+        if (area_h < 1) {
+            set area_h = 1
+        }
+
+        this.layout_bsp_range(0, n, area_x, area_y, area_w, area_h)
+    }
+
+    void render(){
         int i = 0
         while (i < this.windows.length()) {
-            if (this.windows[i].visible) {
-                order.append(i)
-            }
-            set i = i + 1
-        }
-
-        // Insertion sort by z-index (low to high).
-        set i = 1
-        while (i < order.length()) {
-            int key = order[i]
-            int j = i - 1
-
-            while (j >= 0 && this.windows[order[j]].z_index > this.windows[key].z_index) {
-                set order[j + 1] = order[j]
-                set j = j - 1
-            }
-
-            set order[j + 1] = key
-            set i = i + 1
-        }
-
-        // Draw in sorted order. Highest z-index is drawn last.
-        set i = 0
-        while (i < order.length()) {
-            Window win = this.windows[order[i]]
+            Window win = this.windows[i]
             int window_colour = this.rgb(0, 170, 102)
+            if (win.focused) {
+                set window_colour = this.rgb(255, 255, 255)
+            }
             render_draw_rect(win.x, win.y, win.w, win.h, window_colour)
             set i = i + 1
         }
@@ -172,14 +238,16 @@ int deimos_compositor_test_frame_with_count(int window_count) {
 
     int i = 0
     while (i < count) {
-        int x = 80 + (i * 28)
-        int y = 80 + (i * 20)
-        Window win = new Window(x, y, 260, 150)
+        Window win = new Window(0, 0, 1, 1)
         set win.z_index = i + 1
+        if (i == count - 1) {
+            set win.focused = true
+        }
         comp.add_window(win)
         set i = i + 1
     }
 
+    comp.layout_bsp_screen()
     comp.render()
     return count
 }

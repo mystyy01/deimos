@@ -2,6 +2,7 @@
 #include <libsys.h>
 
 extern int deimos_compositor_test_frame_with_count(int window_count);
+extern void mt_heap_reset(void);
 
 static int u32_to_ascii(uint32_t value, char *out) {
     char tmp[10];
@@ -43,26 +44,24 @@ int main(int argc, char **argv) {
     uint64_t last_fps_tick = ticks();
     uint32_t frames_this_second = 0;
     uint32_t fps = 0;
-    int test_window_count = 2;
-    print("[deimos] press N for new window, Q to quit\n");
+    int test_window_count = 0;
+    print("[deimos] press N for new window, X to quit\n");
 
     while (1) {
         struct user_input_event ev;
         if (input_poll(&ev) == 1 && ev.pressed) {
-            if (ev.key == 'q' || ev.key == 'Q') {
-                print("[deimos] quit key\n");
+            if (ev.key == 'x' || ev.key == 'X') {
                 break;
             }
             if (ev.key == 'n' || ev.key == 'N') {
                 if (test_window_count < 16) {
                     test_window_count++;
-                    print("[deimos] new window\n");
-                } else {
-                    print("[deimos] max windows reached\n");
                 }
             }
         }
 
+        // Reclaim mt-lang temporary allocations from the previous frame.
+        mt_heap_reset();
         render_begin_frame(0x101820);
         deimos_compositor_test_frame_with_count(test_window_count);
 
