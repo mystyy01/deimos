@@ -25,8 +25,6 @@ external string realloc(string ptr, int size)
 external void render_draw_rect(int x, int y, int w, int h, int colour)
 
 
-int MAX_WINDOWS = 16
-
 class Window {
     // fields and constructor
     int id = -1
@@ -92,7 +90,7 @@ class Compositor {
 
     // methods
     int add_window(Window win) {
-        if (this.windows.length() >= MAX_WINDOWS) {
+        if (this.windows.length() >= 16) {
             return -1
         }
 
@@ -168,8 +166,8 @@ int deimos_compositor_test_frame_with_count(int window_count) {
     if (count < 0) {
         set count = 0
     }
-    if (count > MAX_WINDOWS) {
-        set count = MAX_WINDOWS
+    if (count > 16) {
+        set count = 16
     }
 
     int i = 0
