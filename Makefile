@@ -15,9 +15,11 @@ BIN := $(OUT_DIR)/deimos
 INPUT_BRIDGE_SRC := $(wildcard window_manager/input_bridge.c)
 INPUT_BRIDGE_OBJ := $(patsubst %.c,$(OUT_DIR)/%.o,$(INPUT_BRIDGE_SRC))
 C_OBJS := \
+	$(OUT_DIR)/config.o \
 	$(OUT_DIR)/main.o \
 	$(OUT_DIR)/mt_runtime.o \
 	$(OUT_DIR)/rendering/rendering.o \
+	$(OUT_DIR)/window_manager/state.o \
 	$(INPUT_BRIDGE_OBJ)
 
 MTC_OBJS := \

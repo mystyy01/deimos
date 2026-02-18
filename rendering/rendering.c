@@ -6,6 +6,19 @@ static uint8_t *backbuffer;
 static uint32_t g_bytes_per_pixel;
 static uint32_t g_pitch;
 
+#define RENDER_MAX_DIRTY_RECTS 128
+
+struct render_dirty_rect {
+    int x;
+    int y;
+    int w;
+    int h;
+};
+
+static struct render_dirty_rect g_dirty_rects[RENDER_MAX_DIRTY_RECTS];
+static int g_dirty_count;
+static int g_full_dirty = 1;
+
 static const uint8_t GLYPH_SPACE[7] = {0, 0, 0, 0, 0, 0, 0};
 static const uint8_t GLYPH_COLON[7] = {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
 static const uint8_t GLYPH_0[7] = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
@@ -56,14 +69,66 @@ static void render_store_pixel(int x, int y, uint32_t colour) {
     }
 
     if (g_fb.bpp == 24) {
-        p[0] = (uint8_t)(colour & 0xFF);         // B
-        p[1] = (uint8_t)((colour >> 8) & 0xFF);  // G
-        p[2] = (uint8_t)((colour >> 16) & 0xFF); // R
+        p[0] = (uint8_t)(colour & 0xFF);
+        p[1] = (uint8_t)((colour >> 8) & 0xFF);
+        p[2] = (uint8_t)((colour >> 16) & 0xFF);
         return;
     }
 
-    // 32bpp path
     *(uint32_t *)p = colour;
+}
+
+static int render_clip_rect(int x, int y, int w, int h, struct render_dirty_rect *out) {
+    if (w <= 0 || h <= 0 || !out) {
+        return 0;
+    }
+
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+
+    if (x1 <= x0 || y1 <= y0) {
+        return 0;
+    }
+
+    out->x = x0;
+    out->y = y0;
+    out->w = x1 - x0;
+    out->h = y1 - y0;
+    return 1;
+}
+
+static void render_fill_rect_clamped(int x, int y, int w, int h, uint32_t colour) {
+    struct render_dirty_rect r;
+    if (!render_clip_rect(x, y, w, h, &r)) {
+        return;
+    }
+
+    int x_end = r.x + r.w;
+    int y_end = r.y + r.h;
+    for (int yy = r.y; yy < y_end; yy++) {
+        for (int xx = r.x; xx < x_end; xx++) {
+            render_store_pixel(xx, yy, colour);
+        }
+    }
+}
+
+static int render_rects_overlap(int ax, int ay, int aw, int ah,
+                                int bx, int by, int bw, int bh) {
+    if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0) return 0;
+    int ar = ax + aw;
+    int ab = ay + ah;
+    int br = bx + bw;
+    int bb = by + bh;
+    if (ar <= bx || br <= ax) return 0;
+    if (ab <= by || bb <= ay) return 0;
+    return 1;
 }
 
 int render_init(void) {
@@ -97,6 +162,9 @@ int render_init(void) {
     }
     backbuffer = (uint8_t *)addr;
 
+    g_dirty_count = 0;
+    g_full_dirty = 1;
+
     print("[deimos] render_init: done\n");
     return 0;
 }
@@ -104,15 +172,23 @@ int render_init(void) {
 int render_width(void)  { return (int)g_fb.width; }
 int render_height(void) { return (int)g_fb.height; }
 int render_bpp(void)    { return (int)g_fb.bpp; }
-int render_pitch(void)  { return (int)g_fb.pitch; }
+int render_pitch(void)  { return (int)g_pitch; }
 
 void render_begin_frame(uint32_t clear_colour) {
     if (!backbuffer) return;
 
-    for (uint32_t y = 0; y < g_fb.height; y++) {
-        for (uint32_t x = 0; x < g_fb.width; x++) {
-            render_store_pixel((int)x, (int)y, clear_colour);
+    if (g_full_dirty || g_dirty_count == 0) {
+        for (uint32_t y = 0; y < g_fb.height; y++) {
+            for (uint32_t x = 0; x < g_fb.width; x++) {
+                render_store_pixel((int)x, (int)y, clear_colour);
+            }
         }
+        return;
+    }
+
+    for (int i = 0; i < g_dirty_count; i++) {
+        struct render_dirty_rect *r = &g_dirty_rects[i];
+        render_fill_rect_clamped(r->x, r->y, r->w, r->h, clear_colour);
     }
 }
 
@@ -133,25 +209,14 @@ void render_clear(uint32_t colour) {
 
 void render_fill_rect(int x, int y, int w, int h, uint32_t colour) {
     if (!backbuffer) return;
-    int x0 = x < 0 ? 0 : x;
-    int y0 = y < 0 ? 0 : y;
-    int x1 = x + w > (int)g_fb.width  ? (int)g_fb.width  : x + w;
-    int y1 = y + h > (int)g_fb.height ? (int)g_fb.height : y + h;
-
-    for (int yy = y0; yy < y1; yy++) {
-        for (int xx = x0; xx < x1; xx++) {
-            render_store_pixel(xx, yy, colour);
-        }
-    }
+    render_fill_rect_clamped(x, y, w, h, colour);
 }
 
 void render_draw_rect(int x, int y, int w, int h, uint32_t colour) {
-    // Top and bottom edges
     for (int xx = 0; xx < w; xx++) {
         render_putpixel(x + xx, y, colour);
         render_putpixel(x + xx, y + h - 1, colour);
     }
-    // Left and right edges
     for (int yy = 0; yy < h; yy++) {
         render_putpixel(x, y + yy, colour);
         render_putpixel(x + w - 1, y + yy, colour);
@@ -177,7 +242,7 @@ void render_draw_text(int x, int y, const char *text, uint32_t colour) {
     int pen_x = x;
     for (int i = 0; text[i]; i++) {
         render_draw_char(pen_x, y, text[i], colour);
-        pen_x += 6; // 5px glyph + 1px spacing
+        pen_x += 6;
     }
 }
 
@@ -190,9 +255,94 @@ int render_text_width(const char *text) {
     return (len * 6) - 1;
 }
 
-void render_mark_dirty(int x, int w, int h) {
-    (void)x; (void)w; (void)h;
+void render_mark_dirty_rect(int x, int y, int w, int h) {
+    if (!backbuffer) return;
+    if (g_full_dirty) return;
+
+    struct render_dirty_rect r;
+    if (!render_clip_rect(x, y, w, h, &r)) {
+        return;
+    }
+
+    if (g_dirty_count >= RENDER_MAX_DIRTY_RECTS) {
+        g_full_dirty = 1;
+        g_dirty_count = 0;
+        return;
+    }
+
+    g_dirty_rects[g_dirty_count++] = r;
 }
-void render_reset_dirty(void) {}
-void render_present_full(void) { render_end_frame(); }
-void render_present_dirty(void) { render_end_frame(); }
+
+void render_mark_full_dirty(void) {
+    g_full_dirty = 1;
+    g_dirty_count = 0;
+}
+
+int render_has_dirty(void) {
+    return g_full_dirty || (g_dirty_count > 0);
+}
+
+int render_rect_needs_redraw(int x, int y, int w, int h) {
+    if (g_full_dirty) return 1;
+    if (g_dirty_count <= 0) return 0;
+
+    for (int i = 0; i < g_dirty_count; i++) {
+        struct render_dirty_rect *r = &g_dirty_rects[i];
+        if (render_rects_overlap(x, y, w, h, r->x, r->y, r->w, r->h)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int render_is_full_dirty(void) {
+    return g_full_dirty;
+}
+
+int render_dirty_count(void) {
+    return g_dirty_count;
+}
+
+int render_dirty_x(int index) {
+    if (index < 0 || index >= g_dirty_count) return 0;
+    return g_dirty_rects[index].x;
+}
+
+int render_dirty_y(int index) {
+    if (index < 0 || index >= g_dirty_count) return 0;
+    return g_dirty_rects[index].y;
+}
+
+int render_dirty_w(int index) {
+    if (index < 0 || index >= g_dirty_count) return 0;
+    return g_dirty_rects[index].w;
+}
+
+int render_dirty_h(int index) {
+    if (index < 0 || index >= g_dirty_count) return 0;
+    return g_dirty_rects[index].h;
+}
+
+void render_reset_dirty(void) {
+    g_dirty_count = 0;
+    g_full_dirty = 0;
+}
+
+void render_present_full(void) {
+    if (!backbuffer) return;
+    fb_present(backbuffer);
+}
+
+void render_present_dirty(void) {
+    if (!backbuffer) return;
+
+    if (g_full_dirty || g_dirty_count == 0) {
+        fb_present(backbuffer);
+        return;
+    }
+
+    for (int i = 0; i < g_dirty_count; i++) {
+        struct render_dirty_rect *r = &g_dirty_rects[i];
+        fb_present_rect(backbuffer, r->x, r->y, r->w, r->h);
+    }
+}

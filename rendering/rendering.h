@@ -21,9 +21,16 @@ void render_draw_char(int x, int y, char c, uint32_t colour);
 void render_draw_text(int x, int y, const char *text, uint32_t colour);
 int render_text_width(const char *text);
 
-// needs font agnostic functions
-
-void render_mark_dirty(int x, int w, int h);
+void render_mark_dirty_rect(int x, int y, int w, int h);
+void render_mark_full_dirty(void);
+int render_has_dirty(void);
+int render_rect_needs_redraw(int x, int y, int w, int h);
+int render_is_full_dirty(void);
+int render_dirty_count(void);
+int render_dirty_x(int index);
+int render_dirty_y(int index);
+int render_dirty_w(int index);
+int render_dirty_h(int index);
 void render_reset_dirty(void);
 void render_present_full(void);
 void render_present_dirty(void);

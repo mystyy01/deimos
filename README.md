@@ -42,4 +42,6 @@ The header is provided from `../phobos-kernel/uapi` through the Makefile include
 ## Notes
 
 - `window_manager/input_bridge.c` exposes C wrappers (for mt-lang consumption) around input syscalls.
+- Runtime config is loaded from `/cfg/deimos.conf` (in `testfs/cfg/deimos.conf` in this repo).
+  Add new keybind/theme options there first, then consume them in code.
 - In normal workflow, run DEIMOS through the superproject (`make run` at repo root).

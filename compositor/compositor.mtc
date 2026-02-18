@@ -22,11 +22,23 @@
 external string malloc(int size)
 external string realloc(string ptr, int size)
 
-external void render_draw_rect(int x, int y, int w, int h, int colour)
+external int render_rect_needs_redraw(int x, int y, int w, int h)
 external int render_width()
 external int render_height()
 external int deimos_split_x(int index)
 external int deimos_split_y(int index)
+external int deimos_split_target_mode(int index)
+external int deimos_split_target_id(int index)
+external int deimos_focus_window_id()
+external int deimos_theme_window_color()
+external int deimos_theme_window_focus_color()
+external int deimos_theme_gap()
+external int deimos_split_vertical_bias_percent()
+external int deimos_split_force_mode()
+external void deimos_report_window_rect(int index, int id, int x, int y, int w, int h)
+external int deimos_should_draw_windows()
+external int deimos_should_draw_layout_window(int window_id)
+external void deimos_draw_window_frame(int window_id, int x, int y, int w, int h, int focused)
 
 
 class Window {
@@ -146,11 +158,13 @@ class Compositor {
         array<int> rect_y = []
         array<int> rect_w = []
         array<int> rect_h = []
+        array<int> rect_parent_split = []  // 0 none, 1 vertical, 2 horizontal
 
         rect_x.append(area_x)
         rect_y.append(area_y)
         rect_w.append(area_w)
         rect_h.append(area_h)
+        rect_parent_split.append(0)
 
         int i = 1
         while (i < n) {
@@ -158,28 +172,47 @@ class Compositor {
             int py = deimos_split_y(i)
             int target = 0
 
+            int mode = deimos_split_target_mode(i)
             int j = 0
             bool found_target = false
-            while (j < i) {
-                int tx = rect_x[j]
-                int ty = rect_y[j]
-                int tw = rect_w[j]
-                int th = rect_h[j]
+            if (mode == 1) {
+                int target_id = deimos_split_target_id(i)
+                while (j < i) {
+                    if (this.windows[j].id == target_id) {
+                        set target = j
+                        set found_target = true
+                    }
+                    if (found_target) {
+                        set j = i
+                    } else {
+                        set j = j + 1
+                    }
+                }
+            }
 
-                if (px >= tx) {
-                    if (px < tx + tw) {
-                        if (py >= ty) {
-                            if (py < ty + th) {
-                                set target = j
-                                set found_target = true
+            if (found_target == false) {
+                set j = 0
+                while (j < i) {
+                    int tx = rect_x[j]
+                    int ty = rect_y[j]
+                    int tw = rect_w[j]
+                    int th = rect_h[j]
+
+                    if (px >= tx) {
+                        if (px < tx + tw) {
+                            if (py >= ty) {
+                                if (py < ty + th) {
+                                    set target = j
+                                    set found_target = true
+                                }
                             }
                         }
                     }
-                }
-                if (found_target) {
-                    set j = i
-                } else {
-                    set j = j + 1
+                    if (found_target) {
+                        set j = i
+                    } else {
+                        set j = j + 1
+                    }
                 }
             }
 
@@ -189,12 +222,40 @@ class Compositor {
             int th = rect_h[target]
 
             bool split_vertical = true
-            if (th > tw) {
+            int split_force = deimos_split_force_mode()
+            if (split_force == 1) {
+                set split_vertical = true
+            } elif (split_force == 2) {
                 set split_vertical = false
+            } else {
+                int bias = deimos_split_vertical_bias_percent()
+                int parent_split = rect_parent_split[target]
+
+                if ((tw * 100) > (th * bias)) {
+                    set split_vertical = true
+                } elif ((th * 100) > (tw * bias)) {
+                    set split_vertical = false
+                } else {
+                    if (parent_split == 1) {
+                        set split_vertical = false
+                    } elif (parent_split == 2) {
+                        set split_vertical = true
+                    } else {
+                        set split_vertical = true
+                    }
+                }
+
+                // Keep splits sane when one axis is already too constrained.
+                if (tw < 64) {
+                    set split_vertical = false
+                }
+                if (th < 48) {
+                    set split_vertical = true
+                }
             }
 
             if (split_vertical) {
-                int split = px - tx
+                int split = tw / 2
                 int min_w = tw / 5
                 if (min_w < 32) {
                     set min_w = 32
@@ -234,24 +295,28 @@ class Compositor {
                     set rect_y[target] = right_y
                     set rect_w[target] = right_w
                     set rect_h[target] = right_h
+                    set rect_parent_split[target] = 1
 
                     rect_x.append(left_x)
                     rect_y.append(left_y)
                     rect_w.append(left_w)
                     rect_h.append(left_h)
+                    rect_parent_split.append(1)
                 } else {
                     set rect_x[target] = left_x
                     set rect_y[target] = left_y
                     set rect_w[target] = left_w
                     set rect_h[target] = left_h
+                    set rect_parent_split[target] = 1
 
                     rect_x.append(right_x)
                     rect_y.append(right_y)
                     rect_w.append(right_w)
                     rect_h.append(right_h)
+                    rect_parent_split.append(1)
                 }
             } else {
-                int split = py - ty
+                int split = th / 2
                 int min_h = th / 5
                 if (min_h < 24) {
                     set min_h = 24
@@ -291,21 +356,25 @@ class Compositor {
                     set rect_y[target] = bottom_y
                     set rect_w[target] = bottom_w
                     set rect_h[target] = bottom_h
+                    set rect_parent_split[target] = 2
 
                     rect_x.append(top_x)
                     rect_y.append(top_y)
                     rect_w.append(top_w)
                     rect_h.append(top_h)
+                    rect_parent_split.append(2)
                 } else {
                     set rect_x[target] = top_x
                     set rect_y[target] = top_y
                     set rect_w[target] = top_w
                     set rect_h[target] = top_h
+                    set rect_parent_split[target] = 2
 
                     rect_x.append(bottom_x)
                     rect_y.append(bottom_y)
                     rect_w.append(bottom_w)
                     rect_h.append(bottom_h)
+                    rect_parent_split.append(2)
                 }
             }
 
@@ -314,7 +383,7 @@ class Compositor {
 
         set i = 0
         while (i < n) {
-            int gap = 6
+            int gap = deimos_theme_gap()
             int draw_x = rect_x[i] + gap
             int draw_y = rect_y[i] + gap
             int draw_w = rect_w[i] - (gap * 2)
@@ -338,14 +407,21 @@ class Compositor {
     }
 
     void render(){
+        int focused_id = deimos_focus_window_id()
+        int should_draw = deimos_should_draw_windows()
         int i = 0
         while (i < this.windows.length()) {
             Window win = this.windows[i]
-            int window_colour = this.rgb(0, 170, 102)
-            if (win.focused) {
-                set window_colour = this.rgb(255, 255, 255)
+            deimos_report_window_rect(i, win.id, win.x, win.y, win.w, win.h)
+            if (should_draw != 0 &&
+                deimos_should_draw_layout_window(win.id) != 0 &&
+                render_rect_needs_redraw(win.x, win.y, win.w, win.h) != 0) {
+                int is_focused = 0
+                if (win.id == focused_id) {
+                    set is_focused = 1
+                }
+                deimos_draw_window_frame(win.id, win.x, win.y, win.w, win.h, is_focused)
             }
-            render_draw_rect(win.x, win.y, win.w, win.h, window_colour)
             set i = i + 1
         }
     }
@@ -366,9 +442,6 @@ int deimos_compositor_test_frame_with_count(int window_count) {
     while (i < count) {
         Window win = new Window(0, 0, 1, 1)
         set win.z_index = i + 1
-        if (i == count - 1) {
-            set win.focused = true
-        }
         comp.add_window(win)
         set i = i + 1
     }
