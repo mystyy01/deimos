@@ -25,6 +25,8 @@ external string realloc(string ptr, int size)
 external void render_draw_rect(int x, int y, int w, int h, int colour)
 external int render_width()
 external int render_height()
+external int deimos_split_x(int index)
+external int deimos_split_y(int index)
 
 
 class Window {
@@ -123,75 +125,7 @@ class Compositor {
         return (r * 65536) + (g * 256) + b
     }
 
-    void layout_bsp_range(int first_index, int count, int x, int y, int w, int h) {
-        if (count <= 0) {
-            return
-        }
-
-        if (count == 1) {
-            int gap = 6
-            int draw_x = x + gap
-            int draw_y = y + gap
-            int draw_w = w - (gap * 2)
-            int draw_h = h - (gap * 2)
-            if (draw_w < 1) {
-                set draw_w = 1
-            }
-            if (draw_h < 1) {
-                set draw_h = 1
-            }
-
-            Window win = this.windows[first_index]
-            set win.x = draw_x
-            set win.y = draw_y
-            set win.w = draw_w
-            set win.h = draw_h
-            set this.windows[first_index] = win
-            return
-        }
-
-        int left_count = count / 2
-        if (left_count < 1) {
-            set left_count = 1
-        }
-        int right_count = count - left_count
-
-        bool split_vertical = true
-        if (h > w) {
-            set split_vertical = false
-        }
-
-        if (split_vertical) {
-            int left_w = w / 2
-            if (left_w < 1) {
-                set left_w = 1
-            }
-            int right_w = w - left_w
-            if (right_w < 1) {
-                set right_w = 1
-                set left_w = w - right_w
-            }
-
-            this.layout_bsp_range(first_index, left_count, x, y, left_w, h)
-            this.layout_bsp_range(first_index + left_count, right_count, x + left_w, y, right_w, h)
-            return
-        }
-
-        int top_h = h / 2
-        if (top_h < 1) {
-            set top_h = 1
-        }
-        int bottom_h = h - top_h
-        if (bottom_h < 1) {
-            set bottom_h = 1
-            set top_h = h - bottom_h
-        }
-
-        this.layout_bsp_range(first_index, left_count, x, y, w, top_h)
-        this.layout_bsp_range(first_index + left_count, right_count, x, y + top_h, w, bottom_h)
-    }
-
-    void layout_bsp_screen() {
+    void layout_split_points() {
         int n = this.windows.length()
         if (n <= 0) {
             return
@@ -208,7 +142,199 @@ class Compositor {
             set area_h = 1
         }
 
-        this.layout_bsp_range(0, n, area_x, area_y, area_w, area_h)
+        array<int> rect_x = []
+        array<int> rect_y = []
+        array<int> rect_w = []
+        array<int> rect_h = []
+
+        rect_x.append(area_x)
+        rect_y.append(area_y)
+        rect_w.append(area_w)
+        rect_h.append(area_h)
+
+        int i = 1
+        while (i < n) {
+            int px = deimos_split_x(i)
+            int py = deimos_split_y(i)
+            int target = 0
+
+            int j = 0
+            bool found_target = false
+            while (j < i) {
+                int tx = rect_x[j]
+                int ty = rect_y[j]
+                int tw = rect_w[j]
+                int th = rect_h[j]
+
+                if (px >= tx) {
+                    if (px < tx + tw) {
+                        if (py >= ty) {
+                            if (py < ty + th) {
+                                set target = j
+                                set found_target = true
+                            }
+                        }
+                    }
+                }
+                if (found_target) {
+                    set j = i
+                } else {
+                    set j = j + 1
+                }
+            }
+
+            int tx = rect_x[target]
+            int ty = rect_y[target]
+            int tw = rect_w[target]
+            int th = rect_h[target]
+
+            bool split_vertical = true
+            if (th > tw) {
+                set split_vertical = false
+            }
+
+            if (split_vertical) {
+                int split = px - tx
+                int min_w = tw / 5
+                if (min_w < 32) {
+                    set min_w = 32
+                }
+                int max_w = tw - min_w
+                if (max_w < 1) {
+                    set max_w = 1
+                }
+                if (split < min_w) {
+                    set split = min_w
+                }
+                if (split > max_w) {
+                    set split = max_w
+                }
+
+                int left_x = tx
+                int left_y = ty
+                int left_w = split
+                int left_h = th
+
+                int right_x = tx + split
+                int right_y = ty
+                int right_w = tw - split
+                int right_h = th
+
+                if (right_w < 1) {
+                    set right_w = 1
+                    set left_w = tw - 1
+                }
+                if (left_w < 1) {
+                    set left_w = 1
+                    set right_w = tw - 1
+                }
+
+                if (px < right_x) {
+                    set rect_x[target] = right_x
+                    set rect_y[target] = right_y
+                    set rect_w[target] = right_w
+                    set rect_h[target] = right_h
+
+                    rect_x.append(left_x)
+                    rect_y.append(left_y)
+                    rect_w.append(left_w)
+                    rect_h.append(left_h)
+                } else {
+                    set rect_x[target] = left_x
+                    set rect_y[target] = left_y
+                    set rect_w[target] = left_w
+                    set rect_h[target] = left_h
+
+                    rect_x.append(right_x)
+                    rect_y.append(right_y)
+                    rect_w.append(right_w)
+                    rect_h.append(right_h)
+                }
+            } else {
+                int split = py - ty
+                int min_h = th / 5
+                if (min_h < 24) {
+                    set min_h = 24
+                }
+                int max_h = th - min_h
+                if (max_h < 1) {
+                    set max_h = 1
+                }
+                if (split < min_h) {
+                    set split = min_h
+                }
+                if (split > max_h) {
+                    set split = max_h
+                }
+
+                int top_x = tx
+                int top_y = ty
+                int top_w = tw
+                int top_h = split
+
+                int bottom_x = tx
+                int bottom_y = ty + split
+                int bottom_w = tw
+                int bottom_h = th - split
+
+                if (bottom_h < 1) {
+                    set bottom_h = 1
+                    set top_h = th - 1
+                }
+                if (top_h < 1) {
+                    set top_h = 1
+                    set bottom_h = th - 1
+                }
+
+                if (py < bottom_y) {
+                    set rect_x[target] = bottom_x
+                    set rect_y[target] = bottom_y
+                    set rect_w[target] = bottom_w
+                    set rect_h[target] = bottom_h
+
+                    rect_x.append(top_x)
+                    rect_y.append(top_y)
+                    rect_w.append(top_w)
+                    rect_h.append(top_h)
+                } else {
+                    set rect_x[target] = top_x
+                    set rect_y[target] = top_y
+                    set rect_w[target] = top_w
+                    set rect_h[target] = top_h
+
+                    rect_x.append(bottom_x)
+                    rect_y.append(bottom_y)
+                    rect_w.append(bottom_w)
+                    rect_h.append(bottom_h)
+                }
+            }
+
+            set i = i + 1
+        }
+
+        set i = 0
+        while (i < n) {
+            int gap = 6
+            int draw_x = rect_x[i] + gap
+            int draw_y = rect_y[i] + gap
+            int draw_w = rect_w[i] - (gap * 2)
+            int draw_h = rect_h[i] - (gap * 2)
+            if (draw_w < 1) {
+                set draw_w = 1
+            }
+            if (draw_h < 1) {
+                set draw_h = 1
+            }
+
+            Window win = this.windows[i]
+            set win.x = draw_x
+            set win.y = draw_y
+            set win.w = draw_w
+            set win.h = draw_h
+            set this.windows[i] = win
+
+            set i = i + 1
+        }
     }
 
     void render(){
@@ -247,7 +373,7 @@ int deimos_compositor_test_frame_with_count(int window_count) {
         set i = i + 1
     }
 
-    comp.layout_bsp_screen()
+    comp.layout_split_points()
     comp.render()
     return count
 }
