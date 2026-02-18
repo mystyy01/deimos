@@ -1,5 +1,7 @@
 #include "rendering/rendering.h"
-#include "../apps/libsys.h"
+#include <libsys.h>
+
+extern int deimos_compositor_test_frame_with_count(int window_count);
 
 static int u32_to_ascii(uint32_t value, char *out) {
     char tmp[10];
@@ -41,21 +43,28 @@ int main(int argc, char **argv) {
     uint64_t last_fps_tick = ticks();
     uint32_t frames_this_second = 0;
     uint32_t fps = 0;
-    // TEMP PERF TEST:
-    // 1) no full-screen clear every frame
-    // 2) no explicit yield() in render loop
-    render_begin_frame(0x101820);
+    int test_window_count = 2;
+    print("[deimos] press N for new window, Q to quit\n");
 
     while (1) {
         struct user_input_event ev;
         if (input_poll(&ev) == 1 && ev.pressed) {
             if (ev.key == 'q' || ev.key == 'Q') {
+                print("[deimos] quit key\n");
                 break;
+            }
+            if (ev.key == 'n' || ev.key == 'N') {
+                if (test_window_count < 16) {
+                    test_window_count++;
+                    print("[deimos] new window\n");
+                } else {
+                    print("[deimos] max windows reached\n");
+                }
             }
         }
 
-        render_fill_rect(40, 40, 120, 70, 0x00AA66);
-        render_draw_rect(40, 40, 120, 70, 0xFFFFFF);
+        render_begin_frame(0x101820);
+        deimos_compositor_test_frame_with_count(test_window_count);
 
         frames_this_second++;
         uint64_t now = ticks();
@@ -83,6 +92,7 @@ int main(int argc, char **argv) {
         render_draw_text(text_x, text_y, fps_text, 0xE6E6E6);
 
         render_end_frame();
+        yield();
     }
 
     exit(0);

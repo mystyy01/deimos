@@ -1,5 +1,5 @@
 #include "rendering.h"
-#include "../../apps/libsys.h"
+#include <libsys.h>
 
 static struct user_fb_info g_fb;
 static uint8_t *backbuffer;

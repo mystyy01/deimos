@@ -1,3 +1,10 @@
+from "../compositor/compositor.mtc" use Window
+
+external int deimos_input_poll()
+external int deimos_input_key()
+external int deimos_input_mods()
+external int deimos_input_pressed()
+external int deimos_input_scancode()
 // ===========================================================
 // WindowManager Class (logical control over windows)
 // -----------------------------------------------------------
@@ -18,5 +25,174 @@
 //     - Could receive input events and convert them to actions
 
 class WindowManager{
-    
+    array<Window> windows = []
+    int focused_window_id = -1
+    int next_window_id = 1
+    int next_z_index = 1
+
+    int find_window_index_by_id(int window_id) {
+        int i = 0
+        while (i < this.windows.length()) {
+            if (this.windows[i].id == window_id) {
+                return i
+            }
+            set i = i + 1
+        }
+        return -1
+    }
+
+    bool create_window(int x, int y, int w, int h) {
+        Window win = new Window(x, y, w, h)
+        set win.id = this.next_window_id
+        set this.next_window_id = this.next_window_id + 1
+        set win.z_index = this.next_z_index
+        set this.next_z_index = this.next_z_index + 1
+
+        this.windows.append(win)
+        this.focus_window(win.id)
+        return true
+    }
+
+    void focus_window(int window_id) {
+        int index = this.find_window_index_by_id(window_id)
+        if (index < 0) {
+            return
+        }
+
+        int i = 0
+        while (i < this.windows.length()) {
+            Window current = this.windows[i]
+            set current.focused = false
+            set this.windows[i] = current
+            set i = i + 1
+        }
+
+        Window target = this.windows[index]
+        set target.focused = true
+        set target.z_index = this.next_z_index
+        set this.windows[index] = target
+        set this.next_z_index = this.next_z_index + 1
+        set this.focused_window_id = window_id
+    }
+
+    void focus_next() {
+        if (this.windows.length() == 0) {
+            return
+        }
+
+        if (this.focused_window_id < 0) {
+            this.focus_window(this.windows[0].id)
+            return
+        }
+
+        int current_index = this.find_window_index_by_id(this.focused_window_id)
+        if (current_index < 0) {
+            this.focus_window(this.windows[0].id)
+            return
+        }
+
+        int next_index = current_index + 1
+        if (next_index >= this.windows.length()) {
+            set next_index = 0
+        }
+        this.focus_window(this.windows[next_index].id)
+    }
+
+    void move_focused(int dx, int dy) {
+        if (this.focused_window_id < 0) {
+            return
+        }
+
+        int index = this.find_window_index_by_id(this.focused_window_id)
+        if (index < 0) {
+            return
+        }
+
+        Window target = this.windows[index]
+        set target.x = target.x + dx
+        set target.y = target.y + dy
+        set this.windows[index] = target
+    }
+
+    void resize_focused(int dw, int dh) {
+        if (this.focused_window_id < 0) {
+            return
+        }
+
+        int index = this.find_window_index_by_id(this.focused_window_id)
+        if (index < 0) {
+            return
+        }
+
+        Window target = this.windows[index]
+        int new_w = target.w + dw
+        int new_h = target.h + dh
+
+        if (new_w < 32) {
+            set new_w = 32
+        }
+        if (new_h < 24) {
+            set new_h = 24
+        }
+
+        set target.w = new_w
+        set target.h = new_h
+        set this.windows[index] = target
+    }
+
+    void poll_input_once() {
+        if (deimos_input_poll() != 1) {
+            return
+        }
+        if (deimos_input_pressed() == 0) {
+            return
+        }
+
+        int key = deimos_input_key()
+
+        // Tab cycles focus.
+        if (key == 9) {
+            this.focus_next()
+            return
+        }
+
+        // TODO(HUMAN): Move these keycodes into a shared constants module.
+        if (key == 130) { // left
+            this.move_focused(-8, 0)
+            return
+        }
+        if (key == 131) { // right
+            this.move_focused(8, 0)
+            return
+        }
+        if (key == 128) { // up
+            this.move_focused(0, -8)
+            return
+        }
+        if (key == 129) { // down
+            this.move_focused(0, 8)
+            return
+        }
+    }
 }
+
+
+// ===========================================================
+// 4. Input Handling
+// -----------------------------------------------------------
+// - Capture keyboard/mouse events (low-level from kernel or libinput)
+// - Forward input to focused window:
+//     - WM decides which window is focused
+//     - Compositor routes events to that window's clientHandle
+// - Optional global shortcuts (e.g., switch workspace, close window)
+// - Notes:
+//     - This can be part of WM or a separate InputManager class
+//     - Keep logic modular: compositor only knows where events go
+
+// ===========================================================
+// 7. Window Lifecycle
+// -----------------------------------------------------------
+// - CreateWindow / DestroyWindow functions
+// - Notify WM and Compositor about new/destroyed windows
+// - Update internal arrays or lists
+// - Make sure zIndex and focus is updated when windows are created/destroyed

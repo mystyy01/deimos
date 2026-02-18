@@ -22,10 +22,14 @@
 external string malloc(int size)
 external string realloc(string ptr, int size)
 
+external void render_draw_rect(int x, int y, int w, int h, int colour)
+
+
 int MAX_WINDOWS = 16
 
 class Window {
     // fields and constructor
+    int id = -1
     int x = 0
     int y = 0
     int w = 0
@@ -84,30 +88,107 @@ class Window {
 
 class Compositor {
     array<Window> windows = []
+    int next_window_id = 1
 
     // methods
-    bool add_window(Window win) {
+    int add_window(Window win) {
         if (this.windows.length() >= MAX_WINDOWS) {
-            return false
+            return -1
         }
 
+        set win.id = this.next_window_id
+        set this.next_window_id = this.next_window_id + 1
         this.windows.append(win)
-        return true
+        return win.id
+    }
+    bool remove_window(int window_id){
+        array<Window> kept = []
+        bool removed = false
+
+        for (window in this.windows){
+            if (window.id == window_id){
+                set removed = true
+            } else {
+                kept.append(window)
+            }
+        }
+
+        if (removed){
+            set this.windows = kept
+        }
+        return removed
+    }
+
+    int rgb(int r, int g, int b) {
+        return (r * 65536) + (g * 256) + b
+    }
+
+    void render(){
+        array<int> order = []
+
+        // Collect visible windows by index.
+        int i = 0
+        while (i < this.windows.length()) {
+            if (this.windows[i].visible) {
+                order.append(i)
+            }
+            set i = i + 1
+        }
+
+        // Insertion sort by z-index (low to high).
+        set i = 1
+        while (i < order.length()) {
+            int key = order[i]
+            int j = i - 1
+
+            while (j >= 0 && this.windows[order[j]].z_index > this.windows[key].z_index) {
+                set order[j + 1] = order[j]
+                set j = j - 1
+            }
+
+            set order[j + 1] = key
+            set i = i + 1
+        }
+
+        // Draw in sorted order. Highest z-index is drawn last.
+        set i = 0
+        while (i < order.length()) {
+            Window win = this.windows[order[i]]
+            int window_colour = this.rgb(0, 170, 102)
+            render_draw_rect(win.x, win.y, win.w, win.h, window_colour)
+            set i = i + 1
+        }
     }
 }
 
-// ===========================================================
-// 4. Input Handling
-// -----------------------------------------------------------
-// - Capture keyboard/mouse events (low-level from kernel or libinput)
-// - Forward input to focused window:
-//     - WM decides which window is focused
-//     - Compositor routes events to that window's clientHandle
-// - Optional global shortcuts (e.g., switch workspace, close window)
-// - Notes:
-//     - This can be part of WM or a separate InputManager class
-//     - Keep logic modular: compositor only knows where events go
+int deimos_compositor_test_frame_with_count(int window_count) {
+    Compositor comp = new Compositor()
 
+    int count = window_count
+    if (count < 0) {
+        set count = 0
+    }
+    if (count > MAX_WINDOWS) {
+        set count = MAX_WINDOWS
+    }
+
+    int i = 0
+    while (i < count) {
+        int x = 80 + (i * 28)
+        int y = 80 + (i * 20)
+        Window win = new Window(x, y, 260, 150)
+        set win.z_index = i + 1
+        comp.add_window(win)
+        set i = i + 1
+    }
+
+    comp.render()
+    return count
+}
+
+int deimos_compositor_test_frame() {
+    return deimos_compositor_test_frame_with_count(2)
+}
 
 // ===========================================================
 // 5. Frame / Rendering Loop
@@ -132,14 +213,6 @@ class Compositor {
 // - Optional animations: resizing, moving, tiling
 
 
-
-// ===========================================================
-// 7. Window Lifecycle
-// -----------------------------------------------------------
-// - CreateWindow / DestroyWindow functions
-// - Notify WM and Compositor about new/destroyed windows
-// - Update internal arrays or lists
-// - Make sure zIndex and focus is updated when windows are created/destroyed
 
 
 
