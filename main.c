@@ -292,9 +292,296 @@ static int key_matches(char input_key, char bind_key) {
     return 0;
 }
 
+static char key_from_set1_scancode(uint8_t scancode) {
+    switch (scancode & 0x7F) {
+        case 0x01: return 27;   // esc
+        case 0x02: return '1';
+        case 0x03: return '2';
+        case 0x04: return '3';
+        case 0x05: return '4';
+        case 0x06: return '5';
+        case 0x07: return '6';
+        case 0x08: return '7';
+        case 0x09: return '8';
+        case 0x0A: return '9';
+        case 0x0B: return '0';
+        case 0x0C: return '-';
+        case 0x0D: return '=';
+        case 0x0F: return '\t';
+        case 0x10: return 'q';
+        case 0x11: return 'w';
+        case 0x12: return 'e';
+        case 0x13: return 'r';
+        case 0x14: return 't';
+        case 0x15: return 'y';
+        case 0x16: return 'u';
+        case 0x17: return 'i';
+        case 0x18: return 'o';
+        case 0x19: return 'p';
+        case 0x1A: return '[';
+        case 0x1B: return ']';
+        case 0x1C: return '\n';
+        case 0x1E: return 'a';
+        case 0x1F: return 's';
+        case 0x20: return 'd';
+        case 0x21: return 'f';
+        case 0x22: return 'g';
+        case 0x23: return 'h';
+        case 0x24: return 'j';
+        case 0x25: return 'k';
+        case 0x26: return 'l';
+        case 0x27: return ';';
+        case 0x28: return '\'';
+        case 0x29: return '`';
+        case 0x2B: return '#';
+        case 0x2C: return 'z';
+        case 0x2D: return 'x';
+        case 0x2E: return 'c';
+        case 0x2F: return 'v';
+        case 0x30: return 'b';
+        case 0x31: return 'n';
+        case 0x32: return 'm';
+        case 0x33: return ',';
+        case 0x34: return '.';
+        case 0x35: return '/';
+        case 0x39: return ' ';
+        default: return 0;
+    }
+}
+
+static int bind_key_matches_event(uint8_t bind_key, const struct user_input_event *ev) {
+    if (!ev) return 0;
+
+    if (key_matches((char)ev->key, (char)bind_key)) {
+        return 1;
+    }
+
+    {
+        char fallback_key = key_from_set1_scancode(ev->scancode);
+        if (fallback_key && key_matches(fallback_key, (char)bind_key)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int modifiers_match(uint8_t active_mods, int required_mask) {
     if (required_mask <= 0) return 1;
     return ((active_mods & (uint8_t)required_mask) == (uint8_t)required_mask);
+}
+
+struct deimos_launch_options {
+    char path[DEIMOS_BIND_ARG_MAX];
+    int floating;
+    int external;
+    int width;
+    int height;
+};
+
+static int is_space_local(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static char ascii_lower_local(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c + ('a' - 'A'));
+    return c;
+}
+
+static int str_eq_local_ci(const char *a, const char *b) {
+    int i = 0;
+    if (!a || !b) return 0;
+    while (a[i] && b[i]) {
+        if (ascii_lower_local(a[i]) != ascii_lower_local(b[i])) return 0;
+        i++;
+    }
+    return a[i] == '\0' && b[i] == '\0';
+}
+
+static int parse_positive_int_local(const char *text) {
+    int value = 0;
+    int i = 0;
+    if (!text || !text[0]) return -1;
+    while (text[i]) {
+        if (text[i] < '0' || text[i] > '9') return -1;
+        value = (value * 10) + (text[i] - '0');
+        i++;
+    }
+    return value;
+}
+
+static void parse_launch_option_token(struct deimos_launch_options *opts, char *token) {
+    if (!opts || !token || !token[0]) return;
+
+    for (int i = 0; token[i]; i++) {
+        token[i] = ascii_lower_local(token[i]);
+    }
+
+    if (str_eq_local_ci(token, "floating") || str_eq_local_ci(token, "float")) {
+        opts->floating = 1;
+        return;
+    }
+    if (str_eq_local_ci(token, "tiled") || str_eq_local_ci(token, "tile")) {
+        opts->floating = 0;
+        return;
+    }
+    if (str_eq_local_ci(token, "external") || str_eq_local_ci(token, "spawn")) {
+        opts->external = 1;
+        return;
+    }
+    if (str_eq_local_ci(token, "managed") || str_eq_local_ci(token, "windowed")) {
+        opts->external = 0;
+        return;
+    }
+
+    if (token[0] == 'w' && token[1] == '=') {
+        int v = parse_positive_int_local(&token[2]);
+        if (v > 0) opts->width = v;
+        return;
+    }
+    if (token[0] == 'h' && token[1] == '=') {
+        int v = parse_positive_int_local(&token[2]);
+        if (v > 0) opts->height = v;
+        return;
+    }
+
+    if (token[0] == 's' && token[1] == 'i' && token[2] == 'z' && token[3] == 'e' && token[4] == '=') {
+        int split = 5;
+        while (token[split]) {
+            if (token[split] == 'x' || token[split] == 'X') break;
+            split++;
+        }
+        if (token[split] == 'x' || token[split] == 'X') {
+            token[split] = '\0';
+            int w = parse_positive_int_local(&token[5]);
+            int h = parse_positive_int_local(&token[split + 1]);
+            if (w > 0) opts->width = w;
+            if (h > 0) opts->height = h;
+            token[split] = 'x';
+        }
+    }
+}
+
+static int parse_launch_options(const char *arg, struct deimos_launch_options *out) {
+    char buf[DEIMOS_BIND_ARG_MAX];
+    int bi = 0;
+    int i = 0;
+
+    if (!arg || !out) return 0;
+
+    out->path[0] = '\0';
+    out->floating = 0;
+    out->external = 0;
+    out->width = 420;
+    out->height = 260;
+
+    while (arg[i] && bi < DEIMOS_BIND_ARG_MAX - 1) {
+        buf[bi++] = arg[i++];
+    }
+    buf[bi] = '\0';
+
+    i = 0;
+    while (buf[i] && is_space_local(buf[i])) i++;
+    if (!buf[i]) return 0;
+
+    int path_start = i;
+    while (buf[i] && !is_space_local(buf[i]) && buf[i] != ',') i++;
+    int path_end = i;
+    if (path_end <= path_start) return 0;
+
+    int oi = 0;
+    for (int p = path_start; p < path_end && oi < DEIMOS_BIND_ARG_MAX - 1; p++) {
+        out->path[oi++] = buf[p];
+    }
+    out->path[oi] = '\0';
+
+    while (buf[i]) {
+        while (buf[i] == ',' || is_space_local(buf[i])) i++;
+        if (!buf[i]) break;
+
+        int token_start = i;
+        while (buf[i] && buf[i] != ',' && !is_space_local(buf[i])) i++;
+        char saved = buf[i];
+        buf[i] = '\0';
+        parse_launch_option_token(out, &buf[token_start]);
+        buf[i] = saved;
+    }
+
+    return out->path[0] != '\0';
+}
+
+static int launch_app_detached(const char *path) {
+    if (!path || !path[0]) return -1;
+
+    int pid = fork();
+    if (pid < 0) {
+        print("[deimos] launch failed: fork\n");
+        return -1;
+    }
+
+    if (pid == 0) {
+        char *argv_local[2];
+        argv_local[0] = (char *)path;
+        argv_local[1] = 0;
+        if (exec(path, argv_local) < 0) {
+            print("[deimos] launch failed: exec\n");
+        }
+        exit(127);
+    }
+
+    return pid;
+}
+
+static int handle_sentence_bind(const struct deimos_bind *bind,
+                                int mouse_x, int mouse_y,
+                                int *should_quit, int *layout_changed) {
+    if (!bind || !should_quit || !layout_changed) return 0;
+
+    if (bind->action == DEIMOS_BIND_ACTION_LAUNCH) {
+        struct deimos_launch_options launch;
+        if (!parse_launch_options(bind->arg, &launch)) {
+            print("[deimos] launch failed: bad bind args\n");
+            return 1;
+        }
+
+        if (launch.external) {
+            (void)launch_app_detached(launch.path);
+        } else {
+            int mode = g_cfg.keyboard_split_use_focus
+                ? DEIMOS_SPLIT_TARGET_FOCUS
+                : DEIMOS_SPLIT_TARGET_MOUSE;
+            if (deimos_wm_add_window_launch(mouse_x, mouse_y, mode,
+                                            launch.floating, launch.width, launch.height) < 0) {
+                print("[deimos] launch failed: max windows reached\n");
+            } else {
+                *layout_changed = 1;
+            }
+        }
+        return 1;
+    }
+
+    if (bind->action == DEIMOS_BIND_ACTION_NEW_WINDOW) {
+        int mode = g_cfg.keyboard_split_use_focus
+            ? DEIMOS_SPLIT_TARGET_FOCUS
+            : DEIMOS_SPLIT_TARGET_MOUSE;
+        deimos_wm_add_window_split(mouse_x, mouse_y, mode);
+        *layout_changed = 1;
+        return 1;
+    }
+
+    if (bind->action == DEIMOS_BIND_ACTION_CLOSE_FOCUSED) {
+        if (deimos_wm_close_focused_window()) {
+            *layout_changed = 1;
+        }
+        return 1;
+    }
+
+    if (bind->action == DEIMOS_BIND_ACTION_QUIT_DEIMOS) {
+        *should_quit = 1;
+        return 1;
+    }
+
+    return 0;
 }
 
 static struct deimos_window_rect *find_rect_by_id(struct deimos_window_rect *rects, int count, int id) {
@@ -411,10 +698,10 @@ int main(int argc, char **argv) {
 
     print("[deimos] starting\n");
     deimos_config_set_defaults(&g_cfg);
-    if (deimos_config_load(&g_cfg, "/cfg/deimos.conf") == 0) {
-        print("[deimos] loaded /cfg/deimos.conf\n");
+    if (deimos_config_load(&g_cfg, "/cfg/deimos.cfg") == 0) {
+        print("[deimos] loaded /cfg/deimos.cfg\n");
     } else {
-        print("[deimos] using defaults (missing /cfg/deimos.conf)\n");
+        print("[deimos] using defaults (missing /cfg/deimos.cfg)\n");
     }
 
     int rc = render_init();
@@ -455,7 +742,14 @@ int main(int argc, char **argv) {
     deimos_wm_init(mouse_x, mouse_y);
     render_mark_full_dirty();
 
-    print("[deimos] using configured keybinds (see /cfg/deimos.conf)\n");
+    print("[deimos] using configured keybinds (see /cfg/deimos.cfg)\n");
+    if (g_cfg.bind_count > 0) {
+        char count_text[16];
+        u32_to_ascii((uint32_t)g_cfg.bind_count, count_text);
+        print("[deimos] sentence binds loaded: ");
+        print(count_text);
+        print("\n");
+    }
 
     while (1) {
         int should_quit = 0;
@@ -471,14 +765,27 @@ int main(int argc, char **argv) {
             }
 
             if (ev.type == INPUT_EVENT_KEYBOARD && ev.pressed) {
-                if (key_matches((char)ev.key, g_cfg.key_quit)) {
-                    should_quit = 1;
-                } else if (key_matches((char)ev.key, g_cfg.key_new_window)) {
-                    int mode = g_cfg.keyboard_split_use_focus
-                        ? DEIMOS_SPLIT_TARGET_FOCUS
-                        : DEIMOS_SPLIT_TARGET_MOUSE;
-                    deimos_wm_add_window_split(mouse_x, mouse_y, mode);
-                    layout_changed = 1;
+                int bind_handled = 0;
+                for (int bi = 0; bi < g_cfg.bind_count; bi++) {
+                    struct deimos_bind *b = &g_cfg.binds[bi];
+                    if (!modifiers_match(ev.modifiers, b->modifiers)) continue;
+                    if (!bind_key_matches_event((uint8_t)b->key, &ev)) continue;
+                    if (handle_sentence_bind(b, mouse_x, mouse_y, &should_quit, &layout_changed)) {
+                        bind_handled = 1;
+                        break;
+                    }
+                }
+
+                if (!bind_handled) {
+                    if (key_matches((char)ev.key, g_cfg.key_quit)) {
+                        should_quit = 1;
+                    } else if (key_matches((char)ev.key, g_cfg.key_new_window)) {
+                        int mode = g_cfg.keyboard_split_use_focus
+                            ? DEIMOS_SPLIT_TARGET_FOCUS
+                            : DEIMOS_SPLIT_TARGET_MOUSE;
+                        deimos_wm_add_window_split(mouse_x, mouse_y, mode);
+                        layout_changed = 1;
+                    }
                 }
             }
 

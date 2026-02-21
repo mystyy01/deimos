@@ -29,6 +29,11 @@ external int deimos_split_x(int index)
 external int deimos_split_y(int index)
 external int deimos_split_target_mode(int index)
 external int deimos_split_target_id(int index)
+external int deimos_window_is_floating(int index)
+external int deimos_window_float_x(int index)
+external int deimos_window_float_y(int index)
+external int deimos_window_float_w(int index)
+external int deimos_window_float_h(int index)
 external int deimos_focus_window_id()
 external int deimos_theme_window_color()
 external int deimos_theme_window_focus_color()
@@ -384,15 +389,30 @@ class Compositor {
         set i = 0
         while (i < n) {
             int gap = deimos_theme_gap()
-            int draw_x = rect_x[i] + gap
-            int draw_y = rect_y[i] + gap
-            int draw_w = rect_w[i] - (gap * 2)
-            int draw_h = rect_h[i] - (gap * 2)
-            if (draw_w < 1) {
-                set draw_w = 1
-            }
-            if (draw_h < 1) {
-                set draw_h = 1
+            int draw_x = 0
+            int draw_y = 0
+            int draw_w = 1
+            int draw_h = 1
+
+            if (deimos_window_is_floating(i) != 0) {
+                set draw_x = deimos_window_float_x(i)
+                set draw_y = deimos_window_float_y(i)
+                set draw_w = deimos_window_float_w(i)
+                set draw_h = deimos_window_float_h(i)
+
+                if (draw_w < 40) { set draw_w = 40 }
+                if (draw_h < 28) { set draw_h = 28 }
+            } else {
+                set draw_x = rect_x[i] + gap
+                set draw_y = rect_y[i] + gap
+                set draw_w = rect_w[i] - (gap * 2)
+                set draw_h = rect_h[i] - (gap * 2)
+                if (draw_w < 1) {
+                    set draw_w = 1
+                }
+                if (draw_h < 1) {
+                    set draw_h = 1
+                }
             }
 
             Window win = this.windows[i]

@@ -3,6 +3,24 @@
 
 #include <stdint.h>
 
+#define DEIMOS_MAX_BINDS 32
+#define DEIMOS_BIND_ARG_MAX 128
+
+enum deimos_bind_action {
+    DEIMOS_BIND_ACTION_NONE = 0,
+    DEIMOS_BIND_ACTION_LAUNCH = 1,
+    DEIMOS_BIND_ACTION_NEW_WINDOW = 2,
+    DEIMOS_BIND_ACTION_CLOSE_FOCUSED = 3,
+    DEIMOS_BIND_ACTION_QUIT_DEIMOS = 4
+};
+
+struct deimos_bind {
+    uint8_t key;
+    uint8_t modifiers;
+    uint8_t action;
+    char arg[DEIMOS_BIND_ARG_MAX];
+};
+
 struct deimos_config {
     char key_new_window;
     char key_quit;
@@ -22,6 +40,9 @@ struct deimos_config {
     int window_gap;
     int split_vertical_bias_percent;
     int split_force_mode; // 0=auto, 1=vertical(left/right), 2=horizontal(top/bottom)
+
+    int bind_count;
+    struct deimos_bind binds[DEIMOS_MAX_BINDS];
 };
 
 void deimos_config_set_defaults(struct deimos_config *cfg);

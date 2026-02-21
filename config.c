@@ -21,6 +21,20 @@ static int str_eq(const char *a, const char *b) {
     return a[i] == '\0' && b[i] == '\0';
 }
 
+static void str_copy_capped(char *dst, int dst_cap, const char *src) {
+    int i = 0;
+    if (!dst || dst_cap <= 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    while (i < dst_cap - 1 && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static void trim_in_place(char *text) {
     if (!text) return;
 
@@ -42,6 +56,18 @@ static void trim_in_place(char *text) {
         text[out++] = text[i];
     }
     text[out] = '\0';
+}
+
+static void strip_inline_comment(char *text) {
+    int i = 0;
+    if (!text) return;
+    while (text[i]) {
+        if (text[i] == '#') {
+            text[i] = '\0';
+            break;
+        }
+        i++;
+    }
 }
 
 static int parse_hex_digit(char c) {
@@ -172,6 +198,182 @@ static int parse_key(const char *text, char *out_key) {
     return 1;
 }
 
+static int parse_bind_key_token(const char *text, uint8_t *out_key) {
+    char key = 0;
+    if (!text || !out_key) return 0;
+
+    if (str_eq(text, "enter") || str_eq(text, "return")) {
+        *out_key = (uint8_t)'\n';
+        return 1;
+    }
+    if (str_eq(text, "esc") || str_eq(text, "escape")) {
+        *out_key = 27;
+        return 1;
+    }
+    if (str_eq(text, "space")) {
+        *out_key = (uint8_t)' ';
+        return 1;
+    }
+
+    if (!parse_key(text, &key)) return 0;
+    if (key >= 'A' && key <= 'Z') {
+        key = (char)(key + ('a' - 'A'));
+    }
+    *out_key = (uint8_t)key;
+    return 1;
+}
+
+static int parse_bind_chord(char *text, uint8_t *out_mods, uint8_t *out_key) {
+    uint8_t mods = 0;
+    uint8_t key = 0;
+    int found_key = 0;
+    int i = 0;
+    int start = 0;
+
+    if (!text || !out_mods || !out_key) return 0;
+
+    while (1) {
+        if (text[i] == '+' || text[i] == '\0') {
+            char saved = text[i];
+            text[i] = '\0';
+
+            char *token = &text[start];
+            trim_in_place(token);
+            for (int k = 0; token[k]; k++) {
+                token[k] = to_lower_ascii(token[k]);
+            }
+
+            if (token[0]) {
+                if (str_eq(token, "shift")) {
+                    mods |= MOD_SHIFT;
+                } else if (str_eq(token, "ctrl") || str_eq(token, "control")) {
+                    mods |= MOD_CTRL;
+                } else if (str_eq(token, "alt")) {
+                    mods |= MOD_ALT;
+                } else if (str_eq(token, "super") || str_eq(token, "win") || str_eq(token, "meta")) {
+                    mods |= MOD_SUPER;
+                } else {
+                    uint8_t parsed_key = 0;
+                    if (found_key) return 0;
+                    if (!parse_bind_key_token(token, &parsed_key)) return 0;
+                    key = parsed_key;
+                    found_key = 1;
+                }
+            }
+
+            text[i] = saved;
+            if (saved == '\0') break;
+            start = i + 1;
+        }
+        i++;
+    }
+
+    if (!found_key) return 0;
+    *out_mods = mods;
+    *out_key = key;
+    return 1;
+}
+
+static int parse_bind_action(char *verb, char *tail, uint8_t *out_action, char *out_arg) {
+    if (!verb || !out_action || !out_arg) return 0;
+    if (!verb[0]) return 0;
+
+    trim_in_place(verb);
+    for (int i = 0; verb[i]; i++) {
+        verb[i] = to_lower_ascii(verb[i]);
+    }
+    if (tail) {
+        trim_in_place(tail);
+    }
+
+    if (str_eq(verb, "launch") || str_eq(verb, "exec") || str_eq(verb, "run")) {
+        if (!tail || !tail[0]) return 0;
+        *out_action = DEIMOS_BIND_ACTION_LAUNCH;
+        str_copy_capped(out_arg, DEIMOS_BIND_ARG_MAX, tail);
+        return 1;
+    }
+
+    if (str_eq(verb, "new")) {
+        if (tail && tail[0]) {
+            for (int i = 0; tail[i]; i++) tail[i] = to_lower_ascii(tail[i]);
+            if (!str_eq(tail, "window")) return 0;
+        }
+        *out_action = DEIMOS_BIND_ACTION_NEW_WINDOW;
+        out_arg[0] = '\0';
+        return 1;
+    }
+
+    if (str_eq(verb, "close")) {
+        if (tail && tail[0]) {
+            for (int i = 0; tail[i]; i++) tail[i] = to_lower_ascii(tail[i]);
+            if (!str_eq(tail, "focused")) return 0;
+        }
+        *out_action = DEIMOS_BIND_ACTION_CLOSE_FOCUSED;
+        out_arg[0] = '\0';
+        return 1;
+    }
+
+    if (str_eq(verb, "quit")) {
+        if (tail && tail[0]) {
+            for (int i = 0; tail[i]; i++) tail[i] = to_lower_ascii(tail[i]);
+            if (!str_eq(tail, "deimos")) return 0;
+        }
+        *out_action = DEIMOS_BIND_ACTION_QUIT_DEIMOS;
+        out_arg[0] = '\0';
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_bind_sentence(char *line, struct deimos_bind *out_bind) {
+    int i;
+    int chord_start, chord_end;
+    int verb_start, verb_end;
+    char *chord;
+    char *verb;
+    char *tail;
+
+    if (!line || !out_bind) return 0;
+    if (!(to_lower_ascii(line[0]) == 'o' &&
+          to_lower_ascii(line[1]) == 'n' &&
+          is_space(line[2]))) {
+        return 0;
+    }
+
+    i = 2;
+    while (line[i] && is_space(line[i])) i++;
+    if (!line[i]) return 0;
+    chord_start = i;
+    while (line[i] && !is_space(line[i])) i++;
+    chord_end = i;
+
+    while (line[i] && is_space(line[i])) i++;
+    if (!line[i]) return 0;
+    verb_start = i;
+    while (line[i] && !is_space(line[i])) i++;
+    verb_end = i;
+
+    while (line[i] && is_space(line[i])) i++;
+    tail = &line[i];
+
+    if (chord_end <= chord_start || verb_end <= verb_start) return 0;
+
+    line[chord_end] = '\0';
+    line[verb_end] = '\0';
+    chord = &line[chord_start];
+    verb = &line[verb_start];
+
+    out_bind->modifiers = 0;
+    out_bind->key = 0;
+    out_bind->action = DEIMOS_BIND_ACTION_NONE;
+    out_bind->arg[0] = '\0';
+
+    if (!parse_bind_chord(chord, &out_bind->modifiers, &out_bind->key)) return 0;
+    if (!parse_bind_action(verb, tail, &out_bind->action, out_bind->arg)) return 0;
+    return 1;
+}
+
 void deimos_config_set_defaults(struct deimos_config *cfg) {
     if (!cfg) return;
 
@@ -193,6 +395,14 @@ void deimos_config_set_defaults(struct deimos_config *cfg) {
     cfg->window_gap = 6;
     cfg->split_vertical_bias_percent = 160;
     cfg->split_force_mode = 0;
+
+    cfg->bind_count = 0;
+    for (int i = 0; i < DEIMOS_MAX_BINDS; i++) {
+        cfg->binds[i].key = 0;
+        cfg->binds[i].modifiers = 0;
+        cfg->binds[i].action = DEIMOS_BIND_ACTION_NONE;
+        cfg->binds[i].arg[0] = '\0';
+    }
 }
 
 int deimos_config_load(struct deimos_config *cfg, const char *path) {
@@ -222,8 +432,17 @@ int deimos_config_load(struct deimos_config *cfg, const char *path) {
 
         buf[line_end] = '\0';
         char *line = &buf[line_start];
+        strip_inline_comment(line);
         trim_in_place(line);
         if (!line[0] || line[0] == '#') continue;
+
+        struct deimos_bind bind;
+        if (parse_bind_sentence(line, &bind)) {
+            if (cfg->bind_count < DEIMOS_MAX_BINDS) {
+                cfg->binds[cfg->bind_count++] = bind;
+            }
+            continue;
+        }
 
         int eq = 0;
         while (line[eq] && line[eq] != '=') eq++;
