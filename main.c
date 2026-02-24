@@ -12,6 +12,32 @@ static struct deimos_config g_cfg;
 #define DEIMOS_SURFACE_W 48
 #define DEIMOS_SURFACE_H 32
 
+// Managed app window tracking
+struct managed_window {
+    int kernel_handle;      // kernel window slot (0-15), -1 = unused
+    int deimos_window_id;   // deimos WM window ID (1-based)
+    uint32_t *buffer;       // compositor-mapped read-only pointer
+    int width;
+    int height;
+    int active;
+};
+
+static struct managed_window g_managed[DEIMOS_MAX_REPORT_WINDOWS];
+static int g_managed_count = 0;
+
+struct pending_launch {
+    int active;
+    int pid;
+    int x;
+    int y;
+    int target_mode;
+    int floating;
+    int width;
+    int height;
+};
+
+static struct pending_launch g_pending_launch[DEIMOS_MAX_REPORT_WINDOWS];
+
 struct deimos_window_rect {
     int id;
     int x;
@@ -35,6 +61,78 @@ struct deimos_window_surface {
 };
 
 static struct deimos_window_surface g_surfaces[DEIMOS_MAX_REPORT_WINDOWS + 1];
+
+static int find_managed_by_deimos_id(int deimos_id) {
+    for (int i = 0; i < g_managed_count; i++) {
+        if (g_managed[i].active && g_managed[i].deimos_window_id == deimos_id)
+            return i;
+    }
+    return -1;
+}
+
+static void clear_pending_launches(void) {
+    for (int i = 0; i < DEIMOS_MAX_REPORT_WINDOWS; i++) {
+        g_pending_launch[i].active = 0;
+        g_pending_launch[i].pid = 0;
+    }
+}
+
+static void remember_pending_launch(int pid, int x, int y,
+                                    int target_mode, int floating,
+                                    int width, int height) {
+    if (pid <= 0) return;
+
+    int slot = -1;
+    for (int i = 0; i < DEIMOS_MAX_REPORT_WINDOWS; i++) {
+        if (!g_pending_launch[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+    }
+
+    g_pending_launch[slot].active = 1;
+    g_pending_launch[slot].pid = pid;
+    g_pending_launch[slot].x = x;
+    g_pending_launch[slot].y = y;
+    g_pending_launch[slot].target_mode = target_mode;
+    g_pending_launch[slot].floating = floating ? 1 : 0;
+    g_pending_launch[slot].width = width;
+    g_pending_launch[slot].height = height;
+}
+
+static int take_pending_launch_for_pid(int pid, struct pending_launch *out) {
+    if (pid <= 0 || !out) return 0;
+    for (int i = 0; i < DEIMOS_MAX_REPORT_WINDOWS; i++) {
+        if (!g_pending_launch[i].active) continue;
+        if (g_pending_launch[i].pid != pid) continue;
+        *out = g_pending_launch[i];
+        g_pending_launch[i].active = 0;
+        g_pending_launch[i].pid = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static uint32_t *get_managed_buffer_for_window_id(int window_id) {
+    int mi = find_managed_by_deimos_id(window_id);
+    if (mi < 0) return 0;
+    return g_managed[mi].buffer;
+}
+
+static int get_managed_width_for_window_id(int window_id) {
+    int mi = find_managed_by_deimos_id(window_id);
+    if (mi < 0) return 0;
+    return g_managed[mi].width;
+}
+
+static int get_managed_height_for_window_id(int window_id) {
+    int mi = find_managed_by_deimos_id(window_id);
+    if (mi < 0) return 0;
+    return g_managed[mi].height;
+}
 
 static uint32_t colour_rgb(int r, int g, int b) {
     if (r < 0) r = 0;
@@ -81,19 +179,44 @@ static void init_window_surface(int window_id) {
     s->initialized = 1;
 }
 
+static void blit_app_buffer_scaled(uint32_t *buf, int buf_w, int buf_h,
+                                   int dst_x, int dst_y, int dst_w, int dst_h) {
+    if (!buf || buf_w <= 0 || buf_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
+
+    for (int dy = 0; dy < dst_h; dy++) {
+        int sy = (dy * buf_h) / dst_h;
+        if (sy >= buf_h) sy = buf_h - 1;
+        for (int dx = 0; dx < dst_w; dx++) {
+            int sx = (dx * buf_w) / dst_w;
+            if (sx >= buf_w) sx = buf_w - 1;
+            render_putpixel(dst_x + dx, dst_y + dy, buf[sy * buf_w + sx]);
+        }
+    }
+}
+
 static void deimos_draw_window_surface_full(int window_id, int x, int y, int w, int h, int focused) {
     if (window_id <= 0 || window_id > DEIMOS_MAX_REPORT_WINDOWS) return;
     if (w <= 2 || h <= 2) return;
-
-    init_window_surface(window_id);
-    struct deimos_window_surface *s = &g_surfaces[window_id];
-    if (!s->initialized) return;
 
     int inner_x = x + 1;
     int inner_y = y + 1;
     int inner_w = w - 2;
     int inner_h = h - 2;
     if (inner_w <= 0 || inner_h <= 0) return;
+
+    // Check for managed app buffer
+    uint32_t *app_buf = get_managed_buffer_for_window_id(window_id);
+    if (app_buf) {
+        int buf_w = get_managed_width_for_window_id(window_id);
+        int buf_h = get_managed_height_for_window_id(window_id);
+        blit_app_buffer_scaled(app_buf, buf_w, buf_h, inner_x, inner_y, inner_w, inner_h);
+        return;
+    }
+
+    // Fallback: placeholder pattern
+    init_window_surface(window_id);
+    struct deimos_window_surface *s = &g_surfaces[window_id];
+    if (!s->initialized) return;
 
     for (int sy = 0; sy < DEIMOS_SURFACE_H; sy++) {
         int y0 = inner_y + (sy * inner_h) / DEIMOS_SURFACE_H;
@@ -135,7 +258,8 @@ static int clip_intersection(int ax, int ay, int aw, int ah,
 
 static void deimos_draw_window_clip(struct deimos_window_surface *s,
                                     int x, int y, int w, int h, int focused,
-                                    int clip_x, int clip_y, int clip_w, int clip_h) {
+                                    int clip_x, int clip_y, int clip_w, int clip_h,
+                                    uint32_t *app_buf, int app_w, int app_h) {
     uint32_t border_col = focused ? g_cfg.window_focus_color : g_cfg.window_border_color;
     uint32_t strip_col = focused ? colour_rgb(245, 245, 250) : colour_rgb(28, 32, 40);
 
@@ -143,7 +267,10 @@ static void deimos_draw_window_clip(struct deimos_window_surface *s,
     int inner_y = y + 1;
     int inner_w = w - 2;
     int inner_h = h - 2;
-    int strip_h = (inner_h > 14) ? 12 : (inner_h / 2);
+    int strip_h = app_buf ? 0 : ((inner_h > 14) ? 12 : (inner_h / 2));
+
+    int src_w = app_buf ? app_w : DEIMOS_SURFACE_W;
+    int src_h = app_buf ? app_h : DEIMOS_SURFACE_H;
 
     int y_end = clip_y + clip_h;
     int x_end = clip_x + clip_w;
@@ -159,16 +286,21 @@ static void deimos_draw_window_clip(struct deimos_window_surface *s,
                 continue;
             }
 
-            int sx = ((xx - inner_x) * DEIMOS_SURFACE_W) / inner_w;
-            int sy = ((yy - inner_y) * DEIMOS_SURFACE_H) / inner_h;
+            int sx = ((xx - inner_x) * src_w) / inner_w;
+            int sy = ((yy - inner_y) * src_h) / inner_h;
             if (sx < 0) sx = 0;
             if (sy < 0) sy = 0;
-            if (sx >= DEIMOS_SURFACE_W) sx = DEIMOS_SURFACE_W - 1;
-            if (sy >= DEIMOS_SURFACE_H) sy = DEIMOS_SURFACE_H - 1;
+            if (sx >= src_w) sx = src_w - 1;
+            if (sy >= src_h) sy = src_h - 1;
 
-            uint32_t c = s->pixels[sy * DEIMOS_SURFACE_W + sx];
-            if (strip_h > 0 && yy < (inner_y + strip_h)) {
-                c = strip_col;
+            uint32_t c;
+            if (app_buf) {
+                c = app_buf[sy * app_w + sx];
+            } else {
+                c = s->pixels[sy * DEIMOS_SURFACE_W + sx];
+                if (strip_h > 0 && yy < (inner_y + strip_h)) {
+                    c = strip_col;
+                }
             }
             render_putpixel(xx, yy, c);
         }
@@ -179,9 +311,14 @@ void deimos_draw_window_frame(int window_id, int x, int y, int w, int h, int foc
     if (window_id <= 0 || window_id > DEIMOS_MAX_REPORT_WINDOWS) return;
     if (w <= 1 || h <= 1) return;
 
-    init_window_surface(window_id);
+    uint32_t *app_buf = get_managed_buffer_for_window_id(window_id);
+    int app_w = get_managed_width_for_window_id(window_id);
+    int app_h = get_managed_height_for_window_id(window_id);
+
+    if (!app_buf) {
+        init_window_surface(window_id);
+    }
     struct deimos_window_surface *s = &g_surfaces[window_id];
-    if (!s->initialized) return;
 
     if (render_is_full_dirty()) {
         deimos_draw_window_surface_full(window_id, x, y, w, h, focused);
@@ -200,7 +337,8 @@ void deimos_draw_window_frame(int window_id, int x, int y, int w, int h, int foc
         if (!clip_intersection(x, y, w, h, rx, ry, rw, rh, &ix, &iy, &iw, &ih)) {
             continue;
         }
-        deimos_draw_window_clip(s, x, y, w, h, focused, ix, iy, iw, ih);
+        deimos_draw_window_clip(s, x, y, w, h, focused, ix, iy, iw, ih,
+                                app_buf, app_w, app_h);
     }
 }
 
@@ -547,15 +685,21 @@ static int handle_sentence_bind(const struct deimos_bind *bind,
         if (launch.external) {
             (void)launch_app_detached(launch.path);
         } else {
-            int mode = g_cfg.keyboard_split_use_focus
-                ? DEIMOS_SPLIT_TARGET_FOCUS
-                : DEIMOS_SPLIT_TARGET_MOUSE;
-            if (deimos_wm_add_window_launch(mouse_x, mouse_y, mode,
-                                            launch.floating, launch.width, launch.height) < 0) {
-                print("[deimos] launch failed: max windows reached\n");
+            // Managed window: launch the app, it will call win_create().
+            // discover_managed_windows() will pick it up and add to WM layout.
+            int pid = launch_app_detached(launch.path);
+            if (pid < 0) {
+                print("[deimos] launch failed: fork/exec\n");
             } else {
-                *layout_changed = 1;
+                int mode = g_cfg.keyboard_split_use_focus
+                    ? DEIMOS_SPLIT_TARGET_FOCUS
+                    : DEIMOS_SPLIT_TARGET_MOUSE;
+                remember_pending_launch(pid, mouse_x, mouse_y,
+                                        mode, launch.floating,
+                                        launch.width, launch.height);
             }
+            // Layout change will happen when discover_managed_windows
+            // detects the new kernel window created by the app.
         }
         return 1;
     }
@@ -692,6 +836,101 @@ static void copy_current_reports_to_previous(void) {
     }
 }
 
+static int find_managed_by_kernel_handle(int khandle) {
+    for (int i = 0; i < g_managed_count; i++) {
+        if (g_managed[i].active && g_managed[i].kernel_handle == khandle)
+            return i;
+    }
+    return -1;
+}
+
+static void discover_managed_windows(int mouse_x, int mouse_y, int *layout_changed) {
+    struct user_win_info info;
+
+    // Check for new kernel windows
+    for (int slot = 0; slot < 16; slot++) {
+        if (win_info(slot, &info) && info.active) {
+            if (find_managed_by_kernel_handle(slot) < 0) {
+                // New window found -- add to WM, applying pending launch options when present.
+                int mode = DEIMOS_SPLIT_TARGET_FOCUS;
+                int floating = 0;
+                int pos_x = mouse_x;
+                int pos_y = mouse_y;
+                int target_w = info.width;
+                int target_h = info.height;
+
+                struct pending_launch pending;
+                if (take_pending_launch_for_pid(info.owner_pid, &pending)) {
+                    mode = pending.target_mode;
+                    floating = pending.floating;
+                    pos_x = pending.x;
+                    pos_y = pending.y;
+                    if (pending.width > 0) target_w = pending.width;
+                    if (pending.height > 0) target_h = pending.height;
+                }
+
+                int wm_id = deimos_wm_add_window_launch(pos_x, pos_y, mode, floating,
+                                                         target_w, target_h);
+                if (wm_id > 0) {
+                    // Map buffer for compositing
+                    long vaddr = win_map(slot);
+                    int mi = -1;
+                    for (int j = 0; j < DEIMOS_MAX_REPORT_WINDOWS; j++) {
+                        if (!g_managed[j].active) {
+                            mi = j;
+                            break;
+                        }
+                    }
+                    if (mi >= 0) {
+                        g_managed[mi].kernel_handle = slot;
+                        g_managed[mi].deimos_window_id = wm_id;
+                        g_managed[mi].buffer = (vaddr > 0) ? (uint32_t *)(unsigned long)vaddr : 0;
+                        g_managed[mi].width = info.width;
+                        g_managed[mi].height = info.height;
+                        g_managed[mi].active = 1;
+                        if (mi >= g_managed_count) g_managed_count = mi + 1;
+
+                        int idx = wm_id - 1;
+                        deimos_wm_set_kernel_handle(idx, slot);
+                        deimos_wm_set_app_pid(idx, info.owner_pid);
+                    }
+                    *layout_changed = 1;
+                }
+            }
+        } else {
+            // Slot not active -- check if we had a managed window for it
+            int mi = find_managed_by_kernel_handle(slot);
+            if (mi >= 0 && g_managed[mi].active) {
+                // Window died -- remove from WM
+                int target_id = g_managed[mi].deimos_window_id;
+                if (deimos_wm_set_focus_window_id(target_id)) {
+                    // focused
+                }
+                deimos_wm_close_focused_window();
+                g_managed[mi].active = 0;
+                g_managed[mi].kernel_handle = -1;
+                g_managed[mi].buffer = 0;
+                *layout_changed = 1;
+
+                // Re-index deimos IDs for remaining managed windows
+                // (close shifts all windows after the removed one down by 1)
+                for (int j = 0; j < g_managed_count; j++) {
+                    if (g_managed[j].active && g_managed[j].deimos_window_id > target_id) {
+                        g_managed[j].deimos_window_id--;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static int get_focused_kernel_handle(void) {
+    int focus_id = deimos_focus_window_id();
+    if (focus_id <= 0) return -1;
+    int idx = focus_id - 1;
+    return deimos_wm_get_kernel_handle(idx);
+}
+
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -739,6 +978,14 @@ int main(int argc, char **argv) {
     int drag_preview_h = 0;
     int drag_preview_valid = 0;
 
+    for (int i = 0; i < DEIMOS_MAX_REPORT_WINDOWS; i++) {
+        g_managed[i].active = 0;
+        g_managed[i].kernel_handle = -1;
+        g_managed[i].buffer = 0;
+    }
+    g_managed_count = 0;
+    clear_pending_launches();
+
     deimos_wm_init(mouse_x, mouse_y);
     render_mark_full_dirty();
 
@@ -785,6 +1032,21 @@ int main(int argc, char **argv) {
                             : DEIMOS_SPLIT_TARGET_MOUSE;
                         deimos_wm_add_window_split(mouse_x, mouse_y, mode);
                         layout_changed = 1;
+                    } else {
+                        // Route keyboard to focused managed window
+                        int kh = get_focused_kernel_handle();
+                        if (kh >= 0) {
+                            struct user_input_event route_ev;
+                            route_ev.type = ev.type;
+                            route_ev.key = ev.key;
+                            route_ev.modifiers = ev.modifiers;
+                            route_ev.pressed = ev.pressed;
+                            route_ev.scancode = ev.scancode;
+                            route_ev.mouse_buttons = ev.mouse_buttons;
+                            route_ev.mouse_x = ev.mouse_x;
+                            route_ev.mouse_y = ev.mouse_y;
+                            win_send(kh, &route_ev);
+                        }
                     }
                 }
             }
@@ -874,6 +1136,23 @@ int main(int argc, char **argv) {
 
         if (should_quit) {
             break;
+        }
+
+        // Discover kernel-managed windows (apps that called win_create)
+        discover_managed_windows(mouse_x, mouse_y, &layout_changed);
+
+        // Check for dirty managed windows (app called win_present)
+        for (int mi = 0; mi < g_managed_count; mi++) {
+            if (!g_managed[mi].active) continue;
+            struct user_win_info winfo;
+            if (win_info(g_managed[mi].kernel_handle, &winfo) && winfo.dirty) {
+                struct deimos_window_rect *wr = find_rect_by_id(
+                    g_prev_window_rects, g_prev_window_rect_count,
+                    g_managed[mi].deimos_window_id);
+                if (wr) {
+                    mark_rect_dirty(wr);
+                }
+            }
         }
 
         int window_count = deimos_wm_window_count();

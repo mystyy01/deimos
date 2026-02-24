@@ -26,4 +26,10 @@ int deimos_window_float_w(int index);
 int deimos_window_float_h(int index);
 int deimos_focus_window_id(void);
 
+// Per-window kernel handle tracking (for managed app windows)
+void deimos_wm_set_kernel_handle(int index, int kernel_handle);
+int deimos_wm_get_kernel_handle(int index);
+void deimos_wm_set_app_pid(int index, int pid);
+int deimos_wm_get_app_pid(int index);
+
 #endif

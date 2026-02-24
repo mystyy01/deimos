@@ -7,6 +7,8 @@ static int g_split_y[DEIMOS_MAX_WINDOWS];
 static int g_split_target_mode[DEIMOS_MAX_WINDOWS];
 static int g_split_target_id[DEIMOS_MAX_WINDOWS];
 static int g_window_floating[DEIMOS_MAX_WINDOWS];
+static int g_window_kernel_handle[DEIMOS_MAX_WINDOWS];
+static int g_window_app_pid[DEIMOS_MAX_WINDOWS];
 static int g_window_float_x[DEIMOS_MAX_WINDOWS];
 static int g_window_float_y[DEIMOS_MAX_WINDOWS];
 static int g_window_float_w[DEIMOS_MAX_WINDOWS];
@@ -27,6 +29,8 @@ void deimos_wm_init(int default_x, int default_y) {
         g_split_target_mode[i] = DEIMOS_SPLIT_TARGET_MOUSE;
         g_split_target_id[i] = -1;
         g_window_floating[i] = 0;
+        g_window_kernel_handle[i] = -1;
+        g_window_app_pid[i] = 0;
         g_window_float_w[i] = 360;
         g_window_float_h[i] = 220;
         g_window_float_x[i] = default_x - (g_window_float_w[i] / 2);
@@ -58,6 +62,8 @@ int deimos_wm_add_window_launch(int x, int y, int target_mode, int floating, int
     }
 
     g_window_floating[index] = floating ? 1 : 0;
+    g_window_kernel_handle[index] = -1;
+    g_window_app_pid[index] = 0;
     g_window_float_w[index] = clamp_min(float_w, 120);
     g_window_float_h[index] = clamp_min(float_h, 80);
     if (g_window_float_w[index] <= 120 && float_w <= 0) g_window_float_w[index] = 420;
@@ -97,6 +103,8 @@ int deimos_wm_close_focused_window(void) {
         g_split_target_mode[i] = g_split_target_mode[i + 1];
         g_split_target_id[i] = g_split_target_id[i + 1];
         g_window_floating[i] = g_window_floating[i + 1];
+        g_window_kernel_handle[i] = g_window_kernel_handle[i + 1];
+        g_window_app_pid[i] = g_window_app_pid[i + 1];
         g_window_float_x[i] = g_window_float_x[i + 1];
         g_window_float_y[i] = g_window_float_y[i + 1];
         g_window_float_w[i] = g_window_float_w[i + 1];
@@ -200,4 +208,24 @@ int deimos_window_float_h(int index) {
 
 int deimos_focus_window_id(void) {
     return g_focused_window_id;
+}
+
+void deimos_wm_set_kernel_handle(int index, int kernel_handle) {
+    if (index < 0 || index >= DEIMOS_MAX_WINDOWS) return;
+    g_window_kernel_handle[index] = kernel_handle;
+}
+
+int deimos_wm_get_kernel_handle(int index) {
+    if (index < 0 || index >= DEIMOS_MAX_WINDOWS) return -1;
+    return g_window_kernel_handle[index];
+}
+
+void deimos_wm_set_app_pid(int index, int pid) {
+    if (index < 0 || index >= DEIMOS_MAX_WINDOWS) return;
+    g_window_app_pid[index] = pid;
+}
+
+int deimos_wm_get_app_pid(int index) {
+    if (index < 0 || index >= DEIMOS_MAX_WINDOWS) return 0;
+    return g_window_app_pid[index];
 }
