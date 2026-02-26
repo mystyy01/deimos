@@ -8,7 +8,7 @@ OUT_DIR ?= build
 LD_SCRIPT ?= $(APPS_DIR)/linker.ld
 UAPI_DIR ?= ../phobos-kernel/uapi
 
-CFLAGS := -ffreestanding -mno-red-zone -fno-pic -mcmodel=large -fno-builtin \
+CFLAGS := -ffreestanding -mno-red-zone -fno-pic -mcmodel=large -fno-builtin -O2 -fno-strict-aliasing -mno-sse -mno-sse2 \
 	-I $(UAPI_DIR) -I . -I rendering
 
 BIN := $(OUT_DIR)/deimos

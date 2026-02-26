@@ -183,13 +183,61 @@ static void blit_app_buffer_scaled(uint32_t *buf, int buf_w, int buf_h,
                                    int dst_x, int dst_y, int dst_w, int dst_h) {
     if (!buf || buf_w <= 0 || buf_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
 
+    int scr_w = render_width();
+    int scr_h = render_height();
+    int pitch = render_pitch();
+    uint8_t *bb = render_backbuffer();
+    if (!bb) return;
+
+    /* 1:1 scale fast path: row-level memcpy when dimensions match */
+    if (buf_w == dst_w && buf_h == dst_h) {
+        /* Clip y range */
+        int y0 = (dst_y < 0) ? 0 : dst_y;
+        int y1 = (dst_y + dst_h > scr_h) ? scr_h : (dst_y + dst_h);
+        /* Clip x range */
+        int x0 = (dst_x < 0) ? 0 : dst_x;
+        int x1 = (dst_x + dst_w > scr_w) ? scr_w : (dst_x + dst_w);
+        if (x0 >= x1 || y0 >= y1) return;
+
+        int row_pixels = x1 - x0;
+        int src_x_off = x0 - dst_x;
+        for (int py = y0; py < y1; py++) {
+            int sy = py - dst_y;
+            uint32_t *src_row = buf + sy * buf_w + src_x_off;
+            uint32_t *dst_row = (uint32_t *)(bb + py * pitch) + x0;
+            for (int i = 0; i < row_pixels; i++)
+                dst_row[i] = src_row[i];
+        }
+        return;
+    }
+
     for (int dy = 0; dy < dst_h; dy++) {
+        int py = dst_y + dy;
+        if ((unsigned)py >= (unsigned)scr_h) continue;
         int sy = (dy * buf_h) / dst_h;
         if (sy >= buf_h) sy = buf_h - 1;
-        for (int dx = 0; dx < dst_w; dx++) {
-            int sx = (dx * buf_w) / dst_w;
+        uint32_t *src_row = buf + sy * buf_w;
+
+        /* Clip x range */
+        int x0 = dst_x;
+        int x1 = dst_x + dst_w;
+        if (x0 < 0) x0 = 0;
+        if (x1 > scr_w) x1 = scr_w;
+        if (x0 >= x1) continue;
+
+        uint32_t *dst_row = (uint32_t *)(bb + py * pitch) + x0;
+
+        /* Bresenham-style stepping for sx */
+        int sx = ((x0 - dst_x) * buf_w) / dst_w;
+        int sx_err = ((x0 - dst_x) * buf_w) % dst_w;
+        for (int px = x0; px < x1; px++) {
             if (sx >= buf_w) sx = buf_w - 1;
-            render_putpixel(dst_x + dx, dst_y + dy, buf[sy * buf_w + sx]);
+            *dst_row++ = src_row[sx];
+            sx_err += buf_w;
+            if (sx_err >= dst_w) {
+                sx += sx_err / dst_w;
+                sx_err %= dst_w;
+            }
         }
     }
 }
@@ -272,37 +320,105 @@ static void deimos_draw_window_clip(struct deimos_window_surface *s,
     int src_w = app_buf ? app_w : DEIMOS_SURFACE_W;
     int src_h = app_buf ? app_h : DEIMOS_SURFACE_H;
 
-    int y_end = clip_y + clip_h;
-    int x_end = clip_x + clip_w;
-    for (int yy = clip_y; yy < y_end; yy++) {
-        for (int xx = clip_x; xx < x_end; xx++) {
-            int on_border = (xx == x) || (xx == (x + w - 1)) || (yy == y) || (yy == (y + h - 1));
-            if (on_border) {
-                render_putpixel(xx, yy, border_col);
-                continue;
-            }
+    /* Draw borders as fill rects clipped to clip region */
+    /* Top border */
+    if (clip_y <= y && y < clip_y + clip_h)
+        render_fill_rect(clip_x, y, clip_w, 1, border_col);
+    /* Bottom border */
+    if (clip_y <= y + h - 1 && y + h - 1 < clip_y + clip_h)
+        render_fill_rect(clip_x, y + h - 1, clip_w, 1, border_col);
+    /* Left border */
+    if (clip_x <= x && x < clip_x + clip_w)
+        render_fill_rect(x, clip_y, 1, clip_h, border_col);
+    /* Right border */
+    if (clip_x <= x + w - 1 && x + w - 1 < clip_x + clip_w)
+        render_fill_rect(x + w - 1, clip_y, 1, clip_h, border_col);
 
-            if (xx < inner_x || yy < inner_y || xx >= (inner_x + inner_w) || yy >= (inner_y + inner_h)) {
-                continue;
-            }
+    if (inner_w <= 0 || inner_h <= 0) return;
 
-            int sx = ((xx - inner_x) * src_w) / inner_w;
-            int sy = ((yy - inner_y) * src_h) / inner_h;
-            if (sx < 0) sx = 0;
-            if (sy < 0) sy = 0;
-            if (sx >= src_w) sx = src_w - 1;
-            if (sy >= src_h) sy = src_h - 1;
+    /* Compute content clip region (intersection of clip rect and inner area) */
+    int cx0 = clip_x > inner_x ? clip_x : inner_x;
+    int cy0 = clip_y > inner_y ? clip_y : inner_y;
+    int cx1 = (clip_x + clip_w) < (inner_x + inner_w) ? (clip_x + clip_w) : (inner_x + inner_w);
+    int cy1 = (clip_y + clip_h) < (inner_y + inner_h) ? (clip_y + clip_h) : (inner_y + inner_h);
+    if (cx0 >= cx1 || cy0 >= cy1) return;
 
-            uint32_t c;
-            if (app_buf) {
-                c = app_buf[sy * app_w + sx];
+    int scr_w = render_width();
+    int pitch = render_pitch();
+    uint8_t *bb = render_backbuffer();
+    int use_direct = (bb && render_bpp() == 32);
+
+    /* 1:1 app buffer fast path: direct row copy when dimensions match */
+    int app_1to1 = (app_buf && src_w == inner_w && src_h == inner_h);
+
+    for (int yy = cy0; yy < cy1; yy++) {
+        int in_strip = (!app_buf && strip_h > 0 && yy < (inner_y + strip_h));
+
+        if (use_direct) {
+            uint32_t *dst_row = (uint32_t *)(bb + yy * pitch) + cx0;
+
+            if (in_strip) {
+                /* Fill with strip color directly */
+                for (int xx = cx0; xx < cx1; xx++)
+                    *dst_row++ = strip_col;
+            } else if (app_1to1) {
+                int sy = yy - inner_y;
+                uint32_t *src_row = app_buf + sy * app_w + (cx0 - inner_x);
+                int count = cx1 - cx0;
+                for (int i = 0; i < count; i++)
+                    dst_row[i] = src_row[i];
+            } else if (app_buf) {
+                int sy = ((yy - inner_y) * src_h) / inner_h;
+                if (sy >= src_h) sy = src_h - 1;
+                uint32_t *src_row = app_buf + sy * app_w;
+                /* Bresenham sx stepping */
+                int dx0 = cx0 - inner_x;
+                int sx = (dx0 * src_w) / inner_w;
+                int sx_err = (dx0 * src_w) % inner_w;
+                for (int xx = cx0; xx < cx1; xx++) {
+                    if (sx >= src_w) sx = src_w - 1;
+                    *dst_row++ = src_row[sx];
+                    sx_err += src_w;
+                    if (sx_err >= inner_w) {
+                        sx += sx_err / inner_w;
+                        sx_err %= inner_w;
+                    }
+                }
             } else {
-                c = s->pixels[sy * DEIMOS_SURFACE_W + sx];
-                if (strip_h > 0 && yy < (inner_y + strip_h)) {
-                    c = strip_col;
+                int sy = ((yy - inner_y) * src_h) / inner_h;
+                if (sy >= src_h) sy = src_h - 1;
+                uint32_t *src_row = s->pixels + sy * DEIMOS_SURFACE_W;
+                int dx0 = cx0 - inner_x;
+                int sx = (dx0 * src_w) / inner_w;
+                int sx_err = (dx0 * src_w) % inner_w;
+                for (int xx = cx0; xx < cx1; xx++) {
+                    if (sx >= src_w) sx = src_w - 1;
+                    *dst_row++ = src_row[sx];
+                    sx_err += src_w;
+                    if (sx_err >= inner_w) {
+                        sx += sx_err / inner_w;
+                        sx_err %= inner_w;
+                    }
                 }
             }
-            render_putpixel(xx, yy, c);
+        } else {
+            /* Fallback: per-pixel putpixel */
+            int sy = ((yy - inner_y) * src_h) / inner_h;
+            if (sy >= src_h) sy = src_h - 1;
+            for (int xx = cx0; xx < cx1; xx++) {
+                int sx = ((xx - inner_x) * src_w) / inner_w;
+                if (sx >= src_w) sx = src_w - 1;
+
+                uint32_t c;
+                if (in_strip) {
+                    c = strip_col;
+                } else if (app_buf) {
+                    c = app_buf[sy * app_w + sx];
+                } else {
+                    c = s->pixels[sy * DEIMOS_SURFACE_W + sx];
+                }
+                render_putpixel(xx, yy, c);
+            }
         }
     }
 }
@@ -670,6 +786,51 @@ static int launch_app_detached(const char *path) {
     return pid;
 }
 
+static void deactivate_managed_slot(int mi) {
+    if (mi < 0 || mi >= DEIMOS_MAX_REPORT_WINDOWS) return;
+
+    g_managed[mi].active = 0;
+    g_managed[mi].kernel_handle = -1;
+    g_managed[mi].deimos_window_id = 0;
+    g_managed[mi].buffer = 0;
+    g_managed[mi].width = 0;
+    g_managed[mi].height = 0;
+
+    while (g_managed_count > 0 && !g_managed[g_managed_count - 1].active) {
+        g_managed_count--;
+    }
+}
+
+static int close_window_by_deimos_id(int target_id, int terminate_owner) {
+    if (target_id <= 0) return 0;
+
+    int mi = find_managed_by_deimos_id(target_id);
+
+    if (terminate_owner) {
+        int owner_pid = deimos_wm_get_app_pid(target_id - 1);
+        if (owner_pid > 0) {
+            if (kill(owner_pid, SIGTERM) < 0) {
+                print("[deimos] close failed: kill(SIGTERM)\n");
+            }
+        }
+    }
+
+    (void)deimos_wm_set_focus_window_id(target_id);
+    if (!deimos_wm_close_focused_window()) return 0;
+
+    if (mi >= 0) {
+        deactivate_managed_slot(mi);
+    }
+
+    for (int j = 0; j < g_managed_count; j++) {
+        if (g_managed[j].active && g_managed[j].deimos_window_id > target_id) {
+            g_managed[j].deimos_window_id--;
+        }
+    }
+
+    return 1;
+}
+
 static int handle_sentence_bind(const struct deimos_bind *bind,
                                 int mouse_x, int mouse_y,
                                 int *should_quit, int *layout_changed) {
@@ -714,7 +875,8 @@ static int handle_sentence_bind(const struct deimos_bind *bind,
     }
 
     if (bind->action == DEIMOS_BIND_ACTION_CLOSE_FOCUSED) {
-        if (deimos_wm_close_focused_window()) {
+        int focused = deimos_focus_window_id();
+        if (close_window_by_deimos_id(focused, 1)) {
             *layout_changed = 1;
         }
         return 1;
@@ -903,22 +1065,12 @@ static void discover_managed_windows(int mouse_x, int mouse_y, int *layout_chang
             if (mi >= 0 && g_managed[mi].active) {
                 // Window died -- remove from WM
                 int target_id = g_managed[mi].deimos_window_id;
-                if (deimos_wm_set_focus_window_id(target_id)) {
-                    // focused
-                }
-                deimos_wm_close_focused_window();
-                g_managed[mi].active = 0;
-                g_managed[mi].kernel_handle = -1;
-                g_managed[mi].buffer = 0;
-                *layout_changed = 1;
-
-                // Re-index deimos IDs for remaining managed windows
-                // (close shifts all windows after the removed one down by 1)
-                for (int j = 0; j < g_managed_count; j++) {
-                    if (g_managed[j].active && g_managed[j].deimos_window_id > target_id) {
-                        g_managed[j].deimos_window_id--;
+                if (target_id > 0) {
+                    if (close_window_by_deimos_id(target_id, 0)) {
+                        *layout_changed = 1;
                     }
                 }
+                deactivate_managed_slot(mi);
             }
         }
     }
@@ -1258,7 +1410,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        if ((presented_frames % 180U) == 0U) {
+        if ((presented_frames % 6000U) == 0U) {
             render_mark_full_dirty();
         }
 

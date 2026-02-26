@@ -6,6 +6,46 @@ static uint8_t *backbuffer;
 static uint32_t g_bytes_per_pixel;
 static uint32_t g_pitch;
 
+static inline void render_memset32(uint32_t *dst, uint32_t val, int count) {
+    for (int i = 0; i < count; i++)
+        dst[i] = val;
+}
+
+static inline void render_memcpy(void *dst, const void *src, uint64_t size) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    uint64_t i = 0;
+    /* Copy 8 bytes at a time when aligned */
+    if (((uint64_t)d & 7) == 0 && ((uint64_t)s & 7) == 0) {
+        uint64_t *d8 = (uint64_t *)d;
+        const uint64_t *s8 = (const uint64_t *)s;
+        uint64_t qwords = size >> 3;
+        for (uint64_t q = 0; q < qwords; q++)
+            d8[q] = s8[q];
+        i = qwords << 3;
+    }
+    for (; i < size; i++)
+        d[i] = s[i];
+}
+
+static inline void render_memset(void *dst, uint8_t val, uint64_t size) {
+    uint8_t *d = (uint8_t *)dst;
+    uint64_t i = 0;
+    if (((uint64_t)d & 7) == 0) {
+        uint64_t fill = val;
+        fill |= fill << 8;
+        fill |= fill << 16;
+        fill |= fill << 32;
+        uint64_t *d8 = (uint64_t *)d;
+        uint64_t qwords = size >> 3;
+        for (uint64_t q = 0; q < qwords; q++)
+            d8[q] = fill;
+        i = qwords << 3;
+    }
+    for (; i < size; i++)
+        d[i] = val;
+}
+
 #define RENDER_MAX_DIRTY_RECTS 128
 
 struct render_dirty_rect {
@@ -110,6 +150,18 @@ static void render_fill_rect_clamped(int x, int y, int w, int h, uint32_t colour
         return;
     }
 
+    if (g_fb.bpp == 32) {
+        /* Fast 32bpp path: fill first row, memcpy to rest */
+        uint8_t *row0 = backbuffer + (uint32_t)r.y * g_pitch + (uint32_t)r.x * 4;
+        render_memset32((uint32_t *)row0, colour, r.w);
+        uint32_t row_bytes = (uint32_t)r.w * 4;
+        for (int yy = 1; yy < r.h; yy++) {
+            uint8_t *dst = row0 + (uint32_t)yy * g_pitch;
+            render_memcpy(dst, row0, row_bytes);
+        }
+        return;
+    }
+
     int x_end = r.x + r.w;
     int y_end = r.y + r.h;
     for (int yy = r.y; yy < y_end; yy++) {
@@ -178,9 +230,20 @@ void render_begin_frame(uint32_t clear_colour) {
     if (!backbuffer) return;
 
     if (g_full_dirty || g_dirty_count == 0) {
-        for (uint32_t y = 0; y < g_fb.height; y++) {
-            for (uint32_t x = 0; x < g_fb.width; x++) {
-                render_store_pixel((int)x, (int)y, clear_colour);
+        if (g_fb.bpp == 32 && clear_colour == 0) {
+            render_memset(backbuffer, 0, (uint64_t)g_fb.height * g_pitch);
+        } else if (g_fb.bpp == 32) {
+            /* Fill first row, memcpy to rest */
+            render_memset32((uint32_t *)backbuffer, clear_colour, (int)g_fb.width);
+            uint32_t row_bytes = g_fb.width * 4;
+            for (uint32_t y = 1; y < g_fb.height; y++) {
+                render_memcpy(backbuffer + y * g_pitch, backbuffer, row_bytes);
+            }
+        } else {
+            for (uint32_t y = 0; y < g_fb.height; y++) {
+                for (uint32_t x = 0; x < g_fb.width; x++) {
+                    render_store_pixel((int)x, (int)y, clear_colour);
+                }
             }
         }
         return;
@@ -213,13 +276,14 @@ void render_fill_rect(int x, int y, int w, int h, uint32_t colour) {
 }
 
 void render_draw_rect(int x, int y, int w, int h, uint32_t colour) {
-    for (int xx = 0; xx < w; xx++) {
-        render_putpixel(x + xx, y, colour);
-        render_putpixel(x + xx, y + h - 1, colour);
-    }
-    for (int yy = 0; yy < h; yy++) {
-        render_putpixel(x, y + yy, colour);
-        render_putpixel(x + w - 1, y + yy, colour);
+    if (w <= 0 || h <= 0) return;
+    /* Top and bottom edges */
+    render_fill_rect_clamped(x, y, w, 1, colour);
+    render_fill_rect_clamped(x, y + h - 1, w, 1, colour);
+    /* Left and right edges (excluding corners already drawn) */
+    if (h > 2) {
+        render_fill_rect_clamped(x, y + 1, 1, h - 2, colour);
+        render_fill_rect_clamped(x + w - 1, y + 1, 1, h - 2, colour);
     }
 }
 
@@ -331,6 +395,10 @@ void render_reset_dirty(void) {
 void render_present_full(void) {
     if (!backbuffer) return;
     fb_present(backbuffer);
+}
+
+uint8_t *render_backbuffer(void) {
+    return backbuffer;
 }
 
 void render_present_dirty(void) {

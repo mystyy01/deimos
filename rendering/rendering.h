@@ -35,5 +35,6 @@ void render_reset_dirty(void);
 void render_present_full(void);
 void render_present_dirty(void);
 
+uint8_t *render_backbuffer(void);
 
 #endif
